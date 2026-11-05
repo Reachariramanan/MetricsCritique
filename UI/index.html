@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OSINT metrics dashboard</title>
+<title>Social Signal Monitor</title>
 <link rel="stylesheet" href="assets/dash.css">
 </head>
 <body>
@@ -22,13 +22,14 @@
 <header class="top">
   <div class="top-in">
     <div class="brand">
-      <h1>OSINT metrics dashboard</h1>
-      <div class="sub">Layer-4 metrics v2 · window 2026-06-14 → 2026-07-29
-        · schema contract docs/METRICS_V2_SPEC.md §5 · snapshot 2026-08-09 21:40:52</div>
+      <h1>Social Signal Monitor</h1>
+      <div class="sub">2026-06-14 → 2026-10-23
+        · updated 2026-11-02 06:27 UTC</div>
     </div>
     <div class="mode-toggle" role="tablist" aria-label="Dashboard mode">
       <button type="button" id="mode-basic-btn" aria-pressed="true">Overview</button>
       <button type="button" id="mode-advanced-btn" aria-pressed="false">Detailed</button>
+      <button type="button" id="mode-military-btn" aria-pressed="false">Military</button>
     </div>
     <div class="top-right">
       <span class="badge" id="mode-badge">real data</span>
@@ -78,7 +79,7 @@
     <div class="filters-in" id="filters-in"></div>
   </div>
   
-  <nav class="toc" aria-label="Sections"><a href="#kpi">1. Header &amp; KPI row</a><a href="#alerts">2. Alerts (FDR-gated)</a><a href="#accel">3. Acceleration &amp; emergence</a><a href="#bursts">4. Burst episodes</a><a href="#volume">5. Volume &amp; growth</a><a href="#intensity">6. Intensity &amp; surprise</a><a href="#persistence">7. Persistence</a><a href="#tone">8. Tone</a><a href="#hate">9. Hate / toxicity</a><a href="#virality">10. Virality &amp; reach</a><a href="#authors">11. Author diversity &amp; coordination</a><a href="#readability">12. Readability</a><a href="#ontology">13. Ontology</a><a href="#hashtags">14. Hashtags</a><a href="#methodology">15. Methodology &amp; data quality</a><a href="#entities">16. Entity directory</a><a href="#risktheme">17. Risk categories &amp; thematic dimensions</a><a href="#geotimeline">18. Timeline &amp; alerts — entity / risk / theme</a><a href="#geoverify">19. Geo-ontology — verification summary</a></nav>
+  <nav class="toc" aria-label="Sections"><a href="#kpi">1. Header &amp; KPI row</a><a href="#alerts">2. Alerts (FDR-gated)</a><a href="#accel">3. Acceleration &amp; emergence</a><a href="#bursts">4. Burst episodes</a><a href="#volume">5. Volume &amp; growth</a><a href="#intensity">6. Intensity &amp; surprise</a><a href="#persistence">7. Persistence</a><a href="#tone">8. Tone</a><a href="#hate">9. Hate / toxicity</a><a href="#virality">10. Virality &amp; reach</a><a href="#authors">11. Author diversity &amp; coordination</a><a href="#readability">12. Readability</a><a href="#ontology">13. Ontology</a><a href="#hashtags">14. Hashtags</a><a href="#methodology">15. Methodology &amp; data quality</a><a href="#entities">16. Entity directory</a><a href="#risktheme">17. Risk categories &amp; thematic dimensions</a><a href="#geotimeline">18. Timeline &amp; alerts — entity / risk / theme</a><a href="#geoverify">19. Geo-ontology — verification summary</a><a href="#livener">20. Live NER</a></nav>
   
 <section class="sec" id="kpi">
   <h2><span class="num">1</span>Header &amp; KPI row</h2>
@@ -370,7 +371,7 @@ silently vanishing from every denominator.</div>
   <p style="margin:0 0 0.4rem"><b>Hashtags cover roughly 15% of the corpus and ~13%
   of Telegram, the dominant source. A hashtag-keyed alerting system would be blind to
   about 85% of collected material.</b></p>
-  <p style="margin:0">1,272 distinct tags are in <code>tag_dim</code>. <b>Key alerts on <code>topic_id</code></b>, which covers
+  <p style="margin:0">6,362 distinct tags are in <code>tag_dim</code>. <b>Key alerts on <code>topic_id</code></b>, which covers
   79% of posts with the remainder explicitly <code>unassigned</code>; treat hashtag
   and keyword as secondary facets. Alerts in
   <code>UI/data/metrics.json</code> that came from a hashtag are tagged
@@ -397,7 +398,7 @@ silently vanishing from every denominator.</div>
     <div data-panel="run_meta"></div>
   </div>
 </div>
-<div class="warnbox"><div class="hd"><span aria-hidden="true">⚠</span> Contract differences detected at build time</div><ul style="margin:0;padding-left:1.1rem"><li><b>topic_dim</b> — columns beyond §5 (carried through unchanged): <code>cluster_size</code></li><li><b>tag_dim</b> — columns beyond §5 (carried through unchanged): <code>in_ts_scope</code></li><li><b>platform_dim</b> — columns beyond §5 (carried through unchanged): <code>n_posts, first_day, last_day, embedding_coverage</code></li><li><b>run_meta</b> — columns beyond §5 (carried through unchanged): <code>n_source_posts, n_ts_posts, code_version</code></li><li><b>metrics_daily</b> — columns beyond §5 (carried through unchanged): <code>hate_n, read_n, views_sum, E_sum, mean_confidence, duplicate_rate, virality_pct_raw, virality_n, effort_source, log_rate, log_count, growth_count, baseline_mu, baseline_theta, baseline_days, baseline_mean, baseline_dist, baseline_method, burst_support_ok, burst_method, onset_slope, novelty_n, novelty_base_n, share_V, surprise_q_global, emergence_flag</code></li><li><b>tag_metrics_daily</b> — columns beyond §5 (carried through unchanged): <code>in_window, effort, growth_share, growth_7d, accel, momentum, surprise_p, burst_state, burst_intensity, burst_episode_id, novelty, days_to_threshold, tone_mean, tone_n, hate_mean, hate_prevalence, hate_calibrated, hate_n, virality_pct, reach_proxy, reach_audience_norm, author_entropy, author_1_hhi, n_authors, coordination_flag, readability_mean, readability_coverage, read_n, views_sum, E_sum, mean_confidence, duplicate_rate, virality_pct_raw, virality_n, effort_source, log_rate, log_count, growth_count, baseline_mu, baseline_theta, baseline_days, baseline_mean, baseline_dist, baseline_method, burst_support_ok, burst_method, onset_slope, novelty_n, novelty_base_n, share_V, surprise_q_global, emergence_flag</code></li><li><b>burst_episodes</b> — columns beyond §5 (carried through unchanged): <code>n_days, burst_method, onset_method, onset_r2, decay_ok</code></li><li><b>persistence</b> — columns beyond §5 (carried through unchanged): <code>fit_ok, ar1_series, diff_ar1_phi, diff_phi_se, diff_half_life_days, diff_ljung_box_q, diff_ljung_box_p, diff_n_obs, mean_reverting, total_V, support_n</code></li><li><b>alert_candidates</b> — columns beyond §5 (carried through unchanged): <code>grain, support_n</code></li></ul></div>
+<div class="warnbox"><div class="hd"><span aria-hidden="true">⚠</span> Contract differences detected at build time</div><ul style="margin:0;padding-left:1.1rem"><li><b>topic_dim</b> — columns beyond §5 (carried through unchanged): <code>cluster_size</code></li><li><b>tag_dim</b> — columns beyond §5 (carried through unchanged): <code>in_ts_scope</code></li><li><b>platform_dim</b> — columns beyond §5 (carried through unchanged): <code>n_posts, first_day, last_day, embedding_coverage</code></li><li><b>run_meta</b> — columns beyond §5 (carried through unchanged): <code>n_source_posts, n_ts_posts, code_version</code></li><li><b>metrics_daily</b> — columns beyond §5 (carried through unchanged): <code>hate_n, read_n, views_sum, E_sum, mean_confidence, duplicate_rate, virality_pct_raw, virality_n, effort_source, log_rate, log_count, growth_count, baseline_mu, baseline_theta, baseline_days, baseline_mean, baseline_dist, baseline_method, burst_support_ok, burst_method, onset_slope, novelty_n, novelty_base_n, share_V, surprise_q_global, emergence_flag</code></li><li><b>burst_episodes</b> — columns beyond §5 (carried through unchanged): <code>n_days, burst_method, onset_method, onset_r2, decay_ok</code></li><li><b>persistence</b> — columns beyond §5 (carried through unchanged): <code>fit_ok, ar1_series, diff_ar1_phi, diff_phi_se, diff_half_life_days, diff_ljung_box_q, diff_ljung_box_p, diff_n_obs, mean_reverting, total_V, support_n</code></li><li><b>alert_candidates</b> — columns beyond §5 (carried through unchanged): <code>grain, support_n</code></li></ul></div>
 <div class="card">
   <p class="ct">Known caveats carried through the whole dashboard</p>
   <ul style="margin:0.2rem 0 0;padding-left:1.1rem;font-size:0.82rem;color:var(--ink-2)">
@@ -502,8 +503,8 @@ silently vanishing from every denominator.</div>
   Dmitriev quote that EU sanctions "do not work, cost &gt;€3T" scored zero risk and
   zero theme tags; a Yemeni-missile-strike-on-a-named-pipeline post got the right risk
   tag but zero theme tags (missing <code>energy_security</code>).</p>
-  <p style="margin:0">Only 35.2% of the corpus (8,227 of
-  23,356 posts) carries any risk or theme label at all, and
+  <p style="margin:0">Only 38.8% of the corpus (8,227 of
+  21,228 posts) carries any risk or theme label at all, and
   <code>gray_zone=true</code> on ~80–85% of all assigned labels. <b>Do not treat
   <code>risk_labels</code>/<code>theme_labels</code> as ground truth without
   per-category threshold re-tuning</b> — filter to <code>gray_zone=false</code> at
@@ -585,6 +586,25 @@ silently vanishing from every denominator.</div>
   <p class="lede">Every subsystem built for this layer, and what an independent verification pass found — including the parts that are not fully sound. Full record: <code>docs/GEOPOLITICAL_ONTOLOGY_SPEC.md</code>.</p>
   <div class="card"><dl class="kv"><div><dt>Topic clustering v2</dt><dd><span class="sev medium"><span class="ic">●</span>PARTIAL</span><div class="fnote" style="margin-top:0.25rem">3 → 11 clusters, largest-cluster share 85–94% → 23–29% under every denominator checked — a real, reproducible fix (topic_dim_v2/post_topic_v2 reconcile to the row). But the single largest cluster (t010, 25.7% of the whole corpus) is still an incoherent grab-bag under direct text sampling — the old failure mode, shrunk, not eliminated.</div></dd></div><div><dt>Entity extraction</dt><dd><span class="sev medium"><span class="ic">●</span>PARTIAL / unmeasured</span><div class="fnote" style="margin-top:0.25rem">20,347 posts NER'd, 110,983 mentions, 29,136 resolved entities — the Implement stage finished, but the verification pass ran out of time waiting on it and never read a single real mention against source text. No precision figure exists for this table yet; code-review-only risks are noted in §16.</div></dd></div><div><dt>Risk / theme labels</dt><dd><span class="sev critical"><span class="ic">◆</span>UNSOUND</span><div class="fnote" style="margin-top:0.25rem">Flat 0.45 cosine threshold across all 21 categories. Measured precision 29% strict / 45% lenient; confirmed recall misses on unambiguous, textbook-clear posts. Needs per-category threshold calibration or a stronger classifier before being trusted as ground truth. Detail in §17.</div></dd></div><div><dt>Timeline metrics (entity/risk/theme)</dt><dd><span class="sev high"><span class="ic">▲</span>SOUND</span><div class="fnote" style="margin-top:0.25rem">46/46 stats_v2 self-checks pass; independent recomputation of every NB baseline, p-value, BH q-value and alert-candidate row matched stored values with 0 mismatches. No correctness defects found. Detail in §18.</div></dd></div></dl></div>
 </section>
+
+<section class="sec" id="livener">
+  <h2><span class="num">20</span>Live NER</h2>
+  <p class="lede">Gemma domain routing and entity extraction over incoming posts, polled from the server while this tab is visible. New posts are routed first (priority), then the backlog.</p>
+  <div class="card" id="live-ner" data-state="idle">
+  <div class="ln-prov"><span class="badge gray">provisional: routing/entity accuracy not yet judged</span>
+    <span class="fnote" id="ln-updated"></span></div>
+  <div class="ln-note empty" id="ln-note" hidden></div>
+  <div id="ln-content">
+    <div class="ln-strip" id="ln-strip"></div>
+    <div class="ln-cols">
+      <div><div class="ct">Domains (by routed posts)</div><div id="ln-domains"></div></div>
+      <div><div class="ct">Top entities (24h)</div><ol class="ln-top" id="ln-top"></ol></div>
+    </div>
+    <div class="ct" style="margin-top:1rem">Recent (25 newest)</div>
+    <ul class="ln-feed" id="ln-feed"></ul>
+  </div>
+</div>
+</section>
   <pre id="selftest"></pre>
   <footer class="foot">
     <p>Interactive UI over a <strong>metrics snapshot</strong>
@@ -597,5 +617,6 @@ silently vanishing from every denominator.</div>
 </div>
 <script>window.__METRICS__ = null;window.__METRICS_URL__ = 'data/metrics.json';</script>
 <script src="assets/dash.js"></script>
+<script src="assets/live.js"></script>
 </body>
 </html>

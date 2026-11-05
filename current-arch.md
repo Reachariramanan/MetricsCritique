@@ -73,6 +73,10 @@ Both DuckDB stores share one statistical substrate: `scripts/lib/stats_v2.py`.
 | `data/metrics_stage/*.parquet` | `07` | Staged v2 tables | Intermediate |
 | `data/metrics.duckdb` | `08` | Metrics v2 | **Authoritative** |
 | `data/geo_ontology.duckdb` | `09`–`15` | Topics v2/v3, entities, risk/theme, CAMEO, geo timeline metrics, geo alerts | Mixed — see verdicts |
+| `data/topic_ext_v4.duckdb` | `16` | `post_topic_v4_ext` (v4 + nearest-centroid fallback, top-2 topics, margin), `topic_coverage_v4` | Experimental; precision ~39%, not adopted |
+| `data/gemma_ner.duckdb` | `17`, `18` | `post_route_v1` (domain routing), `entity_mentions_v2`, `post_entities_status_v2`, `entity_dim_v2` | Experimental; accuracy not yet judged |
+| `data/incoming_posts.duckdb` | `watch_new_posts.py` | `incoming_posts` queue, `watch_state` | Work queue (newest posts first) |
+| `data/shadow_metrics/` | `07`/`08` shadow build | Staged copy used to swap `metrics.duckdb` safely | Transient |
 | `UI/data/metrics.json` | `UI/build_dashboard.py` | Browser snapshot of metrics + taxonomy | Derived |
 | `UI/data/geo_alerts.json` | `11` / build | FDR-gated geo alert export | Derived |
 | Delivery Postgres | `delivery/ingest.py` | Copy of both DuckDB stores + `_delivery_manifest` | Derived copy |
@@ -105,6 +109,23 @@ Tables: `metrics_daily`, `metrics_topic_day`, `tag_metrics_daily`, `burst_episod
 `persistence`, `alert_candidates`, `metric_meta`, `platform_dim`, `topic_dim`, `tag_dim`,
 `null_control`, `sensitivity_checks`, `run_meta`.
 
+### Experimental layers (all opt-in; defaults reproduce the legacy output)
+
+| Stage | Script | Notes |
+|-------|--------|-------|
+| Topic extension | `16_assign_new_posts_topics.py` | Nearest-centroid assignment to v4 centroids for new/noise posts, top-2 topic + margin; excludes junk/incoherent targets. Dry run by default |
+| Soft membership | `lib/soft_topics.py` | `07 --count-mode soft`: cross-parent ambiguous posts split by margin; constants tuned on the first half of the window only |
+| HMM bursts | `lib/hmm_v1.py` | `07 --burst-method hmm`: pooled per-platform HMM, effort offset, lift capped at 20x, smoothed posteriors (causal mode for live alerting not wired) |
+| Event chains | `lib/event_chains.py` | `07 --chain-method v1`: links episodes (lag, shared posts, authors); writes `event_chain_v1`, `chain_links_v1` |
+| Gate harness | `review/noise_gates.py` | Burst null, stability, restatement, alert churn, precision (Wilson), verdict |
+| Gemma routing | `17_gemma_route.py` | Domain D01-D09/none + runner-up, via the self-hosted Gemma (OpenAI-compatible) |
+| Gemma entities | `18_gemma_entities.py` | L1 (core) + L2 (domain) entities from `data/entity_schema.json`, evidence quotes verified |
+| Watcher | `watch_new_posts.py` | Read-only poll of production for newer posts; queue consumed by 17/18 before the backlog |
+| Runner | `run_gemma_ner.sh` | Rounds of 17 then 18, newest first, resumable; `logs/gemma_ner.stop` stops it |
+
+Verdicts and evidence: `docs/TOPIC_KEYING_EVALUATION.md`. `07` now orders its source reads, so
+reruns are deterministic.
+
 ### Geo-ontology
 
 | Stage | Script | Output tables |
@@ -128,6 +149,9 @@ Tables: `metrics_daily`, `metrics_topic_day`, `tag_metrics_daily`, `burst_episod
 | `duck.py` | DuckDB connect, parquet write/append, table replace, views |
 | `stats_v2.py` | Negative-binomial baselines, BH-FDR, empirical Bayes, AR(1), Kleinberg/CUSUM bursts, causal Savitzky–Golay, internal self-checks |
 | `taxonomy.py` | Single source of truth for every displayed label (risk/theme + CAMEO); shipped inside `metrics.json` |
+| `topic_version.py` | Single source of the topic table version (no env dependency; dashboard server imports it) |
+| `gemma_client.py` | Stdlib OpenAI-compatible client (JSON-parse, retry with changed prompt, concurrency) |
+| `entity_routing.py` | Routing/entity prompts, validators, post selection and the incoming-queue priority |
 | `taxonomy_cameo.py` | Machine-readable CAMEO framework (Section A themes, Section B actions) |
 
 ---
@@ -159,6 +183,7 @@ does not pose as trend.
 | `UI/assets/dash.js` | Loads `metrics.json` once; filters re-render all panels client-side; platforms derived from `platform_dim`, labels resolved through the shipped taxonomy |
 | `UI/assets/dash.css` | Theme |
 | `UI/api_server.py` | `ThreadingHTTPServer` on `0.0.0.0:<port>`: serves static files + `GET /api/drill`, one bounded read-only DuckDB query per click across `analytics`, `geo_ontology`, `metrics` |
+| `UI/gemma_live.py` | `GET /api/gemma/status`: read-only live view of routing/entity progress (3 s cache) feeding the "Live NER" panel (5 s polling while the tab is visible) |
 | `UI/fixture.py` | Seeded, schema-exact fake data if `metrics.duckdb` is missing |
 
 Data is a **snapshot**: no polling; numbers change only after `build_dashboard.py` re-runs.
@@ -192,6 +217,22 @@ Click-to-inspect is live but read-only.
 - Independent precision check of the NLI risk/theme labels.
 - Entity subtype coverage after `13` should be re-measured against an outside sample.
 - 6 of 33 topic clusters are flagged `coherent=false`.
+- Topics are weak keys: v4 was fit on ~21k of 251k embedded posts; a full CPU recluster is not
+  seed-stable (ARI 0.09-0.26); the nearest-centroid extension is ~39% precise. Topic-keyed
+  metrics and alerts are provisional (`docs/TOPIC_KEYING_EVALUATION.md`).
+- Gemma routing/entity accuracy is unjudged; the shared Gemma server throughput (~50 posts/min
+  at concurrency 16) makes a full-backlog run take days.
 - `docs/metrics-critique.md` / `scripts/audit_restatement.py`: several timeline metrics
   correlate strongly with raw volume — see that document before adding new metrics.
 - Pinterest's day axis is a `scraped_at` proxy, not publish date.
+
+## Live window and Military mode (UI)
+- `UI/live_view.py` serves `GET /api/live/overview?days=7&domains=D05,D01,...`: a rolling window ending today
+  (anchored on the newest data day when the corpus lags; `stale_days` reports the gap), Gemma domain routing per day
+  (`gemma_ner.duckdb post_route_v1`, domain names from `data/entity_schema.json`, so new D-codes appear without code),
+  and a military-related subset (primary routed domain in the chosen set; default D05, D01, D04, D06, D09; runner-up
+  matches are reported as `also_touches`, not counted). Provisional: routing precision not yet judged.
+- `UI/assets/live.js` adds the third mode button (Overview | Detailed | Military), the Military view and an Overview
+  "Topics now" card. Days with no routed posts are hatched, not drawn as zero (the backlog is worked newest-first).
+- `dash.js` now defaults the Detailed filters to the last 7 days instead of the full window.
+- Harness: `UI/tests/check_live_view.mjs`.

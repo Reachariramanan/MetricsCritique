@@ -60,12 +60,31 @@ Run:
     .venv/bin/python scripts/15_topic_clustering_v4.py            # full build
     .venv/bin/python scripts/15_topic_clustering_v4.py --sweep    # sweep only, no write
     .venv/bin/python scripts/15_topic_clustering_v4.py --seeds 5  # stability seeds
+
+Versioned output / smoke-test flags:
+    --out-version v5   write topic_dim_v5 / topic_parent_v5 / post_topic_v5 /
+                       topic_noise_v5 / topic_code_crosswalk_v5 (default v4 keeps the
+                       original names, incl. the unsuffixed topic_code_crosswalk)
+    --out-db PATH      write there instead of data/geo_ontology.duckdb (event_codes is
+                       still READ from data/geo_ontology.duckdb, read-only)
+    --limit N          seeded random subset of embedded posts (smoke tests)
+    --dry-run          compute + print everything (per-platform noise, k, silhouette,
+                       ARI spread, per-stage timing, peak RSS); write NOTHING
+    --umap-fit-n N     fit UMAP on a seeded subsample of N posts and .transform() the
+                       rest (CPU memory/time escape hatch; default = fit on all)
+
+Stability / primary seed (review items #16, #17): the N seeds are all fitted, the
+pairwise ARI matrix is printed as mean/min/max, and the PRIMARY seed is the one with
+the highest mean ARI to the others (ties -> lowest seed), not a hardcoded 42. Its
+fit is reused (no extra UMAP). `primary_seed` and the ARI spread are stored in
+topic_dim_<v>; per-platform noise share is stored in topic_noise_<v>.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import re
+import resource
 import sys
 import time
 from collections import Counter
@@ -79,6 +98,9 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DB = ROOT / "data" / "analytics.duckdb"
 OUT_DB = ROOT / "data" / "geo_ontology.duckdb"
+# event_codes (for coded_share / crosswalk) is always READ from here, read-only,
+# even when --out-db points elsewhere.
+EVENTS_DB = ROOT / "data" / "geo_ontology.duckdb"
 REPORT = ROOT / "reports" / "ontology_v4_summary.json"
 
 # ---- parameters. Every one of these is a stated choice, not a ladder. -------
@@ -95,6 +117,9 @@ MIN_CLUSTER_SIZE = 30
 MIN_SAMPLES = 5
 
 N_SEEDS = 5           # stability seeds; ARI is reported across all pairs
+# Primary seed is now CHOSEN (highest mean ARI to the other seeds). 42 is only the
+# seed the original v4 build happened to use; retained for the --sweep default seed
+# list compatibility documentation, not used for selection.
 PRIMARY_SEED = 42
 
 # Parent level: agglomerate fine-cluster centroids. Chosen so parents stay
@@ -146,7 +171,66 @@ ID_TYPES = {
     "topic_id": "VARCHAR", "parent_topic_id": "VARCHAR", "post_uid": "VARCHAR",
     "cluster_id": "BIGINT", "parent_cluster_id": "BIGINT",
     "dominant_code": "VARCHAR", "medoid_post_uid": "VARCHAR",
+    # stability columns are NULL when only one seed is run -- pin them so an
+    # all-NULL column is DOUBLE/BIGINT, not INTEGER.
+    "primary_seed": "BIGINT", "n_seeds": "BIGINT",
+    "stability_mean_ari": "DOUBLE", "stability_min_ari": "DOUBLE",
+    "stability_max_ari": "DOUBLE", "primary_seed_mean_ari": "DOUBLE",
 }
+
+# Explicit DDL for the noise table (review item #16). Not routed through the
+# CTAS/ID_TYPES path because it has no id columns and every type is known.
+NOISE_DDL = ("CREATE OR REPLACE TABLE {name} (platform VARCHAR, posts BIGINT, "
+             "noise BIGINT, noise_pct DOUBLE)")
+
+
+def table_names(v: str) -> dict:
+    """Output table names for version `v`.
+
+    `topic_code_crosswalk` is keyed by topic_id ("h012"), and h### ids are re-minted
+    by every clustering run, so its CONTENT is version-specific even though the v4
+    build never suffixed it. Writing it unsuffixed from a v5 run would silently
+    replace v4's crosswalk with rows whose topic_ids mean something else. So for any
+    version other than the legacy "v4" it is written as topic_code_crosswalk_<v>;
+    v4 keeps the original name for backward compatibility.
+    """
+    return {
+        "dim": f"topic_dim_{v}", "parent": f"topic_parent_{v}",
+        "post": f"post_topic_{v}", "noise": f"topic_noise_{v}",
+        "xw": "topic_code_crosswalk" if v == "v4" else f"topic_code_crosswalk_{v}",
+    }
+
+
+class Stages:
+    """Wall-time per pipeline stage (summed over repeats) + peak RSS."""
+
+    def __init__(self):
+        self.t: dict[str, float] = {}
+        self.n: dict[str, int] = {}
+
+    def run(self, name: str):
+        stages = self
+
+        class _Ctx:
+            def __enter__(self_):
+                self_.t0 = time.time()
+
+            def __exit__(self_, *exc):
+                stages.t[name] = stages.t.get(name, 0.0) + time.time() - self_.t0
+                stages.n[name] = stages.n.get(name, 0) + 1
+        return _Ctx()
+
+    def report(self) -> dict:
+        return {k: {"seconds": round(v, 2), "calls": self.n[k]} for k, v in self.t.items()}
+
+    def print(self) -> None:
+        log("stage timings (wall seconds):")
+        for k, v in self.t.items():
+            log(f"  {k:<26} {v:>9.1f}s  x{self.n[k]}")
+
+
+def peak_rss_gb() -> float:
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 ** 2  # KB -> GB
 
 
 def _projection(payload: pd.DataFrame) -> str:
@@ -163,31 +247,59 @@ def log(msg: str) -> None:
 # ============================================================================
 # GPU / CPU backend
 # ============================================================================
-def get_backend() -> tuple:
+def _np(a) -> np.ndarray:
+    return np.asarray(a.get() if hasattr(a, "get") else a)
+
+
+def _fit_transform(make, X: np.ndarray, seed: int, fit_n: int | None,
+                   chunk: int = 20000) -> np.ndarray:
+    """UMAP embed X. With `fit_n`, fit on a seeded subsample and .transform() the
+    rest, so a 251k-post run does not pay a full-corpus fit per seed. The
+    transformed points are placed into the subsample's manifold (they do not
+    reshape it), which is the accepted cost of this option."""
+    n = len(X)
+    if not fit_n or fit_n >= n:
+        return _np(make(seed).fit_transform(X)).astype(np.float32)
+    rng = np.random.default_rng(seed)
+    fit_idx = np.sort(rng.choice(n, size=fit_n, replace=False))
+    rest = np.setdiff1d(np.arange(n), fit_idx, assume_unique=True)
+    m = make(seed)
+    E = np.empty((n, UMAP_COMPONENTS), dtype=np.float32)
+    E[fit_idx] = _np(m.fit_transform(X[fit_idx]))
+    for a in range(0, len(rest), chunk):
+        ix = rest[a:a + chunk]
+        E[ix] = _np(m.transform(X[ix]))
+    return E
+
+
+def get_backend(umap_fit_n: int | None = None) -> tuple:
     """(umap_fn, hdbscan_fn, name). cuML if importable, else CPU."""
     try:
         from cuml.cluster import HDBSCAN as cuHDBSCAN
         from cuml.manifold import UMAP as cuUMAP
 
+        def make(seed):
+            return cuUMAP(n_components=UMAP_COMPONENTS, n_neighbors=UMAP_NEIGHBORS,
+                          min_dist=UMAP_MIN_DIST, metric=UMAP_METRIC, random_state=seed)
+
         def umap_fn(X, seed):
-            E = cuUMAP(n_components=UMAP_COMPONENTS, n_neighbors=UMAP_NEIGHBORS,
-                       min_dist=UMAP_MIN_DIST, metric=UMAP_METRIC,
-                       random_state=seed).fit_transform(X)
-            return np.asarray(E.get() if hasattr(E, "get") else E, dtype=np.float32)
+            return _fit_transform(make, X, seed, umap_fit_n)
 
         def hdbscan_fn(E, mcs, ms):
-            lab = cuHDBSCAN(min_cluster_size=mcs, min_samples=ms).fit_predict(E)
-            return np.asarray(lab.get() if hasattr(lab, "get") else lab)
+            return _np(cuHDBSCAN(min_cluster_size=mcs, min_samples=ms).fit_predict(E))
 
         return umap_fn, hdbscan_fn, "cuml_gpu"
     except ImportError:
         import hdbscan as cpu_hdbscan
         import umap as cpu_umap
 
-        def umap_fn(X, seed):
+        def make(seed):
             return cpu_umap.UMAP(n_components=UMAP_COMPONENTS, n_neighbors=UMAP_NEIGHBORS,
                                  min_dist=UMAP_MIN_DIST, metric=UMAP_METRIC,
-                                 random_state=seed).fit_transform(X).astype(np.float32)
+                                 random_state=seed)
+
+        def umap_fn(X, seed):
+            return _fit_transform(make, X, seed, umap_fit_n)
 
         def hdbscan_fn(E, mcs, ms):
             return cpu_hdbscan.HDBSCAN(min_cluster_size=mcs, min_samples=ms).fit_predict(E)
@@ -198,15 +310,24 @@ def get_backend() -> tuple:
 # ============================================================================
 # Data
 # ============================================================================
-def load_posts() -> pd.DataFrame:
+def load_posts(limit: int | None = None, seed: int = 0) -> pd.DataFrame:
+    """Embedded posts. `limit` = deterministic pseudo-random subset: posts are
+    ordered by hash(post_uid, seed), so the subset is reproducible and unbiased by
+    insertion order / platform."""
     con = duckdb.connect(str(SRC_DB), read_only=True)
-    df = con.execute("""
-        SELECT e.post_uid, e.embedding, p.text, p.lang, p.author_uid
+    sel = ""
+    if limit:
+        sel = (f"WHERE e.post_uid IN (SELECT e2.post_uid FROM post_embeddings e2 "
+               f"JOIN post_facts p2 ON p2.post_uid = e2.post_uid "
+               f"ORDER BY hash(e2.post_uid || '|{int(seed)}'), e2.post_uid LIMIT {int(limit)})")
+    df = con.execute(f"""
+        SELECT e.post_uid, e.embedding, p.text, p.lang, p.author_uid, p.platform
         FROM post_embeddings e
         JOIN post_facts p ON p.post_uid = e.post_uid
+        {sel}
     """).fetchdf()
     con.close()
-    log(f"posts with embeddings: {len(df):,}")
+    log(f"posts with embeddings: {len(df):,}" + (f" (--limit {limit:,})" if limit else ""))
     return df
 
 
@@ -238,17 +359,69 @@ def cosine_silhouette(X: np.ndarray, labels: np.ndarray) -> float:
                                   random_state=0))
 
 
-def stability(X, umap_fn, hdbscan_fn, mcs, ms, seeds) -> dict:
+def stability(X, umap_fn, hdbscan_fn, mcs, ms, seeds, stages: Stages | None = None):
+    """Fit UMAP+HDBSCAN once per seed and compare all pairs.
+
+    Returns (summary, runs). `runs[seed] = (E, labels)` so the caller can reuse the
+    winning fit instead of refitting. The primary seed is the one with the highest
+    mean ARI to the others (ties -> lowest seed); with <2 seeds there is nothing to
+    compare, so the first seed is used and the ARI fields are None.
+    """
     from sklearn.metrics import adjusted_rand_score
-    labs, ks = [], []
+    st = stages or Stages()
+    runs, ks = {}, []
     for s in seeds:
-        lab = hdbscan_fn(umap_fn(X, s), mcs, ms)
-        labs.append(lab)
+        with st.run("umap"):
+            E = umap_fn(X, s)
+        with st.run("hdbscan"):
+            lab = hdbscan_fn(E, mcs, ms)
+        runs[s] = (E, lab)
         ks.append(int(len(set(lab)) - (1 if -1 in lab else 0)))
-    aris = [adjusted_rand_score(labs[i], labs[j])
-            for i in range(len(labs)) for j in range(i + 1, len(labs))]
-    return {"k_per_seed": ks, "mean_ari": float(np.mean(aris)),
-            "min_ari": float(np.min(aris)), "n_seeds": len(seeds)}
+        log(f"  seed {s}: k={ks[-1]} noise={100*float((lab == -1).mean()):.1f}% "
+            f"(umap {st.t['umap']:.0f}s cum, hdbscan {st.t['hdbscan']:.0f}s cum)")
+    pair = {}
+    with st.run("ari_pairs"):
+        for a in range(len(seeds)):
+            for b in range(a + 1, len(seeds)):
+                pair[(a, b)] = float(adjusted_rand_score(runs[seeds[a]][1], runs[seeds[b]][1]))
+    aris = list(pair.values())
+    per_seed_mean = {}
+    if aris:
+        for a, sd in enumerate(seeds):
+            v = [pair[tuple(sorted((a, b)))] for b in range(len(seeds)) if b != a]
+            per_seed_mean[sd] = float(np.mean(v))
+        primary = max(seeds, key=lambda sd: (per_seed_mean[sd], -sd))
+    else:
+        primary = seeds[0]
+    summary = {
+        "k_per_seed": ks, "seeds": list(seeds), "n_seeds": len(seeds),
+        "mean_ari": float(np.mean(aris)) if aris else None,
+        "min_ari": float(np.min(aris)) if aris else None,
+        "max_ari": float(np.max(aris)) if aris else None,
+        "pairwise_ari": {f"{seeds[a]}-{seeds[b]}": round(v, 4) for (a, b), v in pair.items()},
+        "per_seed_mean_ari": {str(k): round(v, 4) for k, v in per_seed_mean.items()},
+        "primary_seed": int(primary),
+        "primary_seed_mean_ari": per_seed_mean.get(primary),
+    }
+    return summary, runs
+
+
+def _fmt(x) -> str:
+    return "n/a" if x is None else f"{x:.3f}"
+
+
+def _nn(x):
+    """None for None/NaN, else rounded float (keeps NULL, never 0)."""
+    return None if x is None or x != x else round(float(x), 4)
+
+
+def noise_by_platform(df: pd.DataFrame, labels: np.ndarray) -> pd.DataFrame:
+    g = (pd.DataFrame({"platform": df["platform"].fillna("unknown").to_numpy(),
+                       "noise": (labels == -1).astype(int)})
+         .groupby("platform")["noise"].agg(posts="size", noise="sum").reset_index())
+    g["noise_pct"] = (100.0 * g["noise"] / g["posts"]).round(2)
+    return g.sort_values("posts", ascending=False).reset_index(drop=True).astype(
+        {"posts": "int64", "noise": "int64"})
 
 
 # ============================================================================
@@ -413,146 +586,230 @@ def main() -> int:
     ap.add_argument("--seeds", type=int, default=N_SEEDS)
     ap.add_argument("--min-cluster-size", type=int, default=MIN_CLUSTER_SIZE)
     ap.add_argument("--parents", type=int, default=N_PARENTS)
+    ap.add_argument("--out-version", default="v4",
+                    help="suffix for output tables: topic_dim_<v>, topic_parent_<v>, "
+                         "post_topic_<v>, topic_noise_<v>, topic_code_crosswalk_<v> "
+                         "(v4 keeps the legacy unsuffixed crosswalk name)")
+    ap.add_argument("--out-db", default=str(OUT_DB),
+                    help="DuckDB file to write (default: data/geo_ontology.duckdb)")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="seeded random subset of embedded posts (smoke tests)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="compute and print everything, write nothing")
+    ap.add_argument("--umap-fit-n", type=int, default=None,
+                    help="fit UMAP on a seeded subsample of N posts and transform the "
+                         "rest (default: fit on all)")
     args = ap.parse_args()
+    if not re.fullmatch(r"[A-Za-z0-9_]+", args.out_version):
+        ap.error("--out-version must match [A-Za-z0-9_]+ (it is spliced into table names)")
+    T = table_names(args.out_version)
+    out_db = Path(args.out_db)
 
     t0 = time.time()
-    umap_fn, hdbscan_fn, backend = get_backend()
-    log(f"backend: {backend}")
+    stages = Stages()
+    umap_fn, hdbscan_fn, backend = get_backend(args.umap_fit_n)
+    log(f"backend: {backend}   out_version={args.out_version}   "
+        f"{'DRY-RUN (no writes)' if args.dry_run else 'out_db=' + str(out_db)}")
+    if args.umap_fit_n:
+        log(f"UMAP fit on {args.umap_fit_n:,} posts per seed, transform the rest")
 
-    df = load_posts()
-    X = unit_norm(df)
-    log(f"embeddings: {X.shape}")
+    with stages.run("load_posts"):
+        df = load_posts(args.limit)
+    with stages.run("unit_norm"):
+        X = unit_norm(df)
+    log(f"embeddings: {X.shape}   peak RSS so far {peak_rss_gb():.1f} GB")
 
     seeds = list(range(args.seeds))
     if args.sweep:
         log("stability sweep (no write)")
-        print(f"\n{'mcs':>5} {'k per seed':<32} {'mean ARI':>9} {'min ARI':>8} {'sil_1024d':>10}")
+        print(f"\n{'mcs':>5} {'k per seed':<32} {'mean ARI':>9} {'min ARI':>8} "
+              f"{'max ARI':>8} {'prim':>5} {'sil_1024d':>10}")
         for mcs in [15, 20, 25, 30, 40, 60]:
-            st = stability(X, umap_fn, hdbscan_fn, mcs, MIN_SAMPLES, seeds)
-            lab = hdbscan_fn(umap_fn(X, PRIMARY_SEED), mcs, MIN_SAMPLES)
-            print(f"{mcs:>5} {str(st['k_per_seed']):<32} {st['mean_ari']:>9.3f} "
-                  f"{st['min_ari']:>8.3f} {cosine_silhouette(X, lab):>10.3f}")
+            st, runs = stability(X, umap_fn, hdbscan_fn, mcs, MIN_SAMPLES, seeds, stages)
+            lab = runs[st["primary_seed"]][1]
+            with stages.run("silhouette"):
+                sil = cosine_silhouette(X, lab)
+            print(f"{mcs:>5} {str(st['k_per_seed']):<32} {_fmt(st['mean_ari']):>9} "
+                  f"{_fmt(st['min_ari']):>8} {_fmt(st['max_ari']):>8} "
+                  f"{st['primary_seed']:>5} {sil:>10.3f}")
+        stages.print()
         return 0
 
     mcs = args.min_cluster_size
-    log(f"stability across {len(seeds)} seeds at min_cluster_size={mcs} ...")
-    st = stability(X, umap_fn, hdbscan_fn, mcs, MIN_SAMPLES, seeds)
-    log(f"  k per seed {st['k_per_seed']}  mean ARI {st['mean_ari']:.3f}  "
-        f"min ARI {st['min_ari']:.3f}")
-    if st["min_ari"] < 0.3:
+    log(f"stability across {len(seeds)} seeds {seeds} at min_cluster_size={mcs} ...")
+    st, runs = stability(X, umap_fn, hdbscan_fn, mcs, MIN_SAMPLES, seeds, stages)
+    log(f"  k per seed {st['k_per_seed']}")
+    log(f"  pairwise ARI over {len(st['pairwise_ari'])} pairs: mean {_fmt(st['mean_ari'])}  "
+        f"min {_fmt(st['min_ari'])}  max {_fmt(st['max_ari'])}")
+    if st["per_seed_mean_ari"]:
+        log(f"  per-seed mean ARI to others: {st['per_seed_mean_ari']}")
+    log(f"  primary seed = {st['primary_seed']} (highest mean ARI to the others; "
+        f"not hardcoded)")
+    if st["min_ari"] is not None and st["min_ari"] < 0.3:
         log("  WARNING: min pairwise ARI < 0.3 -- this clustering is not reproducible "
             "across seeds; treat every topic below as provisional")
+    if st["min_ari"] is None:
+        log("  NOTE: <2 seeds -- stability NOT measured (ARI fields are NULL)")
+    primary = st["primary_seed"]
 
-    E = umap_fn(X, PRIMARY_SEED)
-    labels = hdbscan_fn(E, mcs, MIN_SAMPLES)
+    E, labels = runs[primary]
+    del runs
     k = int(len(set(labels)) - (1 if -1 in labels else 0))
     noise = int((labels == -1).sum())
-    sil = cosine_silhouette(X, labels)
+    with stages.run("silhouette"):
+        sil = cosine_silhouette(X, labels)
     log(f"clusters: {k}  noise: {noise:,} ({100*noise/len(labels):.1f}%)  "
         f"silhouette(cosine, 1024d): {sil:.3f}")
+    noise_df = noise_by_platform(df, labels)
+    log("noise share by platform:")
+    for r in noise_df.itertuples():
+        log(f"  {r.platform:<14} posts={r.posts:>8,}  noise={r.noise:>8,}  {r.noise_pct:>6.2f}%")
 
-    parents = build_parents(X, labels, args.parents)
+    with stages.run("parents"):
+        parents = build_parents(X, labels, args.parents)
     n_par = len(set(parents.values()))
     log(f"parent topics: {n_par} (agglomerated from {k} sub-topics)")
 
-    labs = label_clusters(df, labels, X)
-    _c = duckdb.connect(str(OUT_DB), read_only=True)
+    with stages.run("label_clusters"):
+        labs = label_clusters(df, labels, X)
+    # event_codes is READ-ONLY from EVENTS_DB regardless of --out-db.
     coded = set()
-    if _c.execute("SELECT count(*) FROM duckdb_tables() "
-                  "WHERE table_name='event_codes'").fetchone()[0]:
-        coded = {r[0] for r in _c.execute(
-            "SELECT DISTINCT post_uid FROM event_codes WHERE axis='theme'").fetchall()}
-    _c.close()
-    flags = coherence_flags(df, labels, coded)
+    xw_src = None
+    if EVENTS_DB.exists():
+        xw_src = duckdb.connect(str(EVENTS_DB), read_only=True)
+        if xw_src.execute("SELECT count(*) FROM duckdb_tables() "
+                          "WHERE table_name='event_codes'").fetchone()[0]:
+            coded = {r[0] for r in xw_src.execute(
+                "SELECT DISTINCT post_uid FROM event_codes WHERE axis='theme'").fetchall()}
+    with stages.run("coherence_flags"):
+        flags = coherence_flags(df, labels, coded)
     n_coh = sum(1 for f in flags.values() if f["coherent"])
     n_off = sum(1 for f in flags.values() if f["off_topic_geopolitical"])
     log(f"coherent: {n_coh}/{k}   off-topic (no geopolitical code): {n_off}/{k}")
 
     run_at = datetime.now(timezone.utc).isoformat()
     dim_rows, post_rows = [], []
-    for cid in sorted(c for c in set(labels) if c >= 0):
-        idx = np.where(labels == cid)[0]
-        L, F = labs[cid], flags[cid]
-        pid = parents[cid]
-        dim_rows.append({
-            "topic_id": f"h{cid:03d}", "cluster_id": int(cid),
-            "parent_topic_id": f"p{pid:02d}", "parent_cluster_id": int(pid),
-            "level": 2,
-            "name": L["name"], "terms": ", ".join(L["terms"]),
-            "dominant_lang": L["dominant_lang"],
-            "langs": json.dumps(L["langs"], ensure_ascii=False),
-            "medoid_post_uid": L["medoid_post_uid"], "medoid_text": L["medoid_text"],
-            "coherent": F["coherent"], "incoherent_reason": F["reason"],
-            "off_topic_geopolitical": F["off_topic_geopolitical"],
-            "coded_share": F["coded_share"],
-            "top_author_share": F["top_author_share"], "top_dup_share": F["top_dup_share"],
-            "size": int(len(idx)),
-            "method": f"{backend}|umap{UMAP_COMPONENTS}|mcs{mcs}|ms{MIN_SAMPLES}",
-            "n_clusters_total": k, "silhouette_cosine_1024d": round(sil, 4),
-            "stability_mean_ari": round(st["mean_ari"], 4),
-            "stability_min_ari": round(st["min_ari"], 4),
-            "run_at": run_at,
-        })
-        for i in idx:
-            sim = float(X[i] @ (X[idx].mean(axis=0) /
-                                (np.linalg.norm(X[idx].mean(axis=0)) or 1.0)))
-            post_rows.append({"post_uid": df["post_uid"].iloc[i],
-                              "topic_id": f"h{cid:03d}", "cluster_id": int(cid),
-                              "parent_topic_id": f"p{pid:02d}",
-                              "confidence": round(sim, 4), "assign_method": "hdbscan"})
-    for i in np.where(labels == -1)[0]:
-        post_rows.append({"post_uid": df["post_uid"].iloc[i], "topic_id": None,
-                          "cluster_id": -1, "parent_topic_id": None,
-                          "confidence": None, "assign_method": "noise"})
+    with stages.run("build_rows"):
+        for cid in sorted(c for c in set(labels) if c >= 0):
+            idx = np.where(labels == cid)[0]
+            L, F = labs[cid], flags[cid]
+            pid = parents[cid]
+            dim_rows.append({
+                "topic_id": f"h{cid:03d}", "cluster_id": int(cid),
+                "parent_topic_id": f"p{pid:02d}", "parent_cluster_id": int(pid),
+                "level": 2,
+                "name": L["name"], "terms": ", ".join(L["terms"]),
+                "dominant_lang": L["dominant_lang"],
+                "langs": json.dumps(L["langs"], ensure_ascii=False),
+                "medoid_post_uid": L["medoid_post_uid"], "medoid_text": L["medoid_text"],
+                "coherent": F["coherent"], "incoherent_reason": F["reason"],
+                "off_topic_geopolitical": F["off_topic_geopolitical"],
+                "coded_share": F["coded_share"],
+                "top_author_share": F["top_author_share"], "top_dup_share": F["top_dup_share"],
+                "size": int(len(idx)),
+                "method": f"{backend}|umap{UMAP_COMPONENTS}|mcs{mcs}|ms{MIN_SAMPLES}"
+                          + (f"|fitn{args.umap_fit_n}" if args.umap_fit_n else ""),
+                "n_clusters_total": k, "silhouette_cosine_1024d": round(sil, 4),
+                "stability_mean_ari": _nn(st["mean_ari"]),
+                "stability_min_ari": _nn(st["min_ari"]),
+                "stability_max_ari": _nn(st["max_ari"]),
+                "n_seeds": int(st["n_seeds"]),
+                "primary_seed": int(primary),
+                "primary_seed_mean_ari": _nn(st["primary_seed_mean_ari"]),
+                "run_at": run_at,
+            })
+            # Unit centroid computed once per cluster; recomputing it per post was
+            # O(N * cluster size) for an identical value.
+            cen = X[idx].mean(axis=0)
+            cen /= (np.linalg.norm(cen) or 1.0)
+            for i in idx:
+                sim = float(X[i] @ cen)
+                post_rows.append({"post_uid": df["post_uid"].iloc[i],
+                                  "topic_id": f"h{cid:03d}", "cluster_id": int(cid),
+                                  "parent_topic_id": f"p{pid:02d}",
+                                  "confidence": round(sim, 4), "assign_method": "hdbscan"})
+        for i in np.where(labels == -1)[0]:
+            post_rows.append({"post_uid": df["post_uid"].iloc[i], "topic_id": None,
+                              "cluster_id": -1, "parent_topic_id": None,
+                              "confidence": None, "assign_method": "noise"})
 
-    topic_dim = pd.DataFrame(dim_rows)
-    post_topic = pd.DataFrame(post_rows)
+        topic_dim = pd.DataFrame(dim_rows)
+        post_topic = pd.DataFrame(post_rows)
 
-    # parent dimension: named from its children's most distinctive terms
-    par_rows = []
-    for pid in sorted(set(parents.values())):
-        kids = topic_dim[topic_dim["parent_cluster_id"] == pid]
-        terms = Counter()
-        for t in kids["terms"]:
-            terms.update(t.split(", "))
-        par_rows.append({
-            "topic_id": f"p{pid:02d}", "cluster_id": int(pid), "parent_topic_id": None,
-            "parent_cluster_id": None, "level": 1,
-            "name": " / ".join([t for t, _ in terms.most_common(3)]),
-            "terms": ", ".join(t for t, _ in terms.most_common(LABEL_TERMS)),
-            "n_subtopics": int(len(kids)), "size": int(kids["size"].sum()),
-            "coherent": bool(kids["coherent"].any()),
-            "run_at": run_at,
-        })
-    parent_dim = pd.DataFrame(par_rows)
+        # parent dimension: named from its children's most distinctive terms
+        par_rows = []
+        for pid in sorted(set(parents.values())):
+            kids = topic_dim[topic_dim["parent_cluster_id"] == pid]
+            terms = Counter()
+            for t in kids["terms"]:
+                terms.update(t.split(", "))
+            par_rows.append({
+                "topic_id": f"p{pid:02d}", "cluster_id": int(pid), "parent_topic_id": None,
+                "parent_cluster_id": None, "level": 1,
+                "name": " / ".join([t for t, _ in terms.most_common(3)]),
+                "terms": ", ".join(t for t, _ in terms.most_common(LABEL_TERMS)),
+                "n_subtopics": int(len(kids)), "size": int(kids["size"].sum()),
+                "coherent": bool(kids["coherent"].any()),
+                "run_at": run_at,
+            })
+        parent_dim = pd.DataFrame(par_rows)
 
-    con = duckdb.connect(str(OUT_DB), read_only=False)
-    xw = crosswalk(con, post_topic[post_topic["topic_id"].notna()])
-    for name, payload in [("topic_dim_v4", topic_dim), ("topic_parent_v4", parent_dim),
-                          ("post_topic_v4", post_topic), ("topic_code_crosswalk", xw)]:
-        if payload is None or not len(payload):
-            log(f"  (skipping {name}: empty)")
-            continue
-        con.register("_p", payload)
-        con.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT {_projection(payload)} FROM _p")
-        con.unregister("_p")
-        log(f"  published {name:<22} rows={len(payload):>7,}")
-    con.close()
+    with stages.run("crosswalk"):
+        xw = (crosswalk(xw_src, post_topic[post_topic["topic_id"].notna()])
+              if xw_src is not None else pd.DataFrame())
+    if xw_src is not None:
+        xw_src.close()
 
-    REPORT.parent.mkdir(parents=True, exist_ok=True)
-    REPORT.write_text(json.dumps({
-        "run_at": run_at, "backend": backend,
-        "n_posts": int(len(df)), "n_subtopics": k, "n_parents": n_par,
+    summary = {
+        "run_at": run_at, "backend": backend, "out_version": args.out_version,
+        "n_posts": int(len(df)), "limit": args.limit, "umap_fit_n": args.umap_fit_n,
+        "n_subtopics": k, "n_parents": n_par,
         "noise": noise, "noise_share": round(noise / len(labels), 4),
+        "noise_by_platform": noise_df.to_dict("records"),
         "coherent": n_coh, "off_topic_geopolitical": n_off,
         "silhouette_cosine_1024d": round(sil, 4),
         "silhouette_space": "original 1024-d embedding, cosine -- NOT UMAP space",
         "stability": st,
         "params": {"min_cluster_size": mcs, "min_samples": MIN_SAMPLES,
                    "umap_components": UMAP_COMPONENTS, "umap_neighbors": UMAP_NEIGHBORS,
-                   "n_parents": args.parents, "primary_seed": PRIMARY_SEED},
-    }, indent=2))
-    log(f"wrote {REPORT}")
+                   "n_parents": args.parents, "primary_seed": primary,
+                   "primary_seed_rule": "highest mean pairwise ARI to the other seeds"},
+    }
+
+    if args.dry_run:
+        log("DRY-RUN: nothing written. Would have written "
+            f"{T['dim']}={len(topic_dim):,} {T['parent']}={len(parent_dim):,} "
+            f"{T['post']}={len(post_topic):,} {T['noise']}={len(noise_df):,} "
+            f"{T['xw']}={len(xw):,} rows to {out_db}")
+    else:
+        out_db.parent.mkdir(parents=True, exist_ok=True)
+        con = duckdb.connect(str(out_db), read_only=False)
+        for name, payload in [(T["dim"], topic_dim), (T["parent"], parent_dim),
+                              (T["post"], post_topic), (T["xw"], xw)]:
+            if payload is None or not len(payload):
+                log(f"  (skipping {name}: empty)")
+                continue
+            con.register("_p", payload)
+            con.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT {_projection(payload)} FROM _p")
+            con.unregister("_p")
+            log(f"  published {name:<26} rows={len(payload):>7,}")
+        # noise table: explicit DDL, then INSERT
+        con.execute(NOISE_DDL.format(name=T["noise"]))
+        con.register("_p", noise_df[["platform", "posts", "noise", "noise_pct"]])
+        con.execute(f"INSERT INTO {T['noise']} SELECT platform, posts, noise, noise_pct FROM _p")
+        con.unregister("_p")
+        log(f"  published {T['noise']:<26} rows={len(noise_df):>7,}")
+        con.close()
+
+        report = REPORT.with_name(f"ontology_{args.out_version}_summary.json")
+        report.parent.mkdir(parents=True, exist_ok=True)
+        summary["timings"] = stages.report()
+        summary["peak_rss_gb"] = round(peak_rss_gb(), 2)
+        report.write_text(json.dumps(summary, indent=2, default=str))
+        log(f"wrote {report}")
+
+    stages.print()
+    log(f"peak RSS: {peak_rss_gb():.1f} GB")
     log(f"done in {time.time()-t0:.1f}s")
     return 0
 

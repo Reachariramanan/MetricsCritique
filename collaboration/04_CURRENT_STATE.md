@@ -1,5 +1,31 @@
 # Current state (as of 2026-07-30, later — see top sections for the newest work)
 
+## 2026-10-29 — Domain classifier for NER routing: BGE-M3 vs Laya (DONE; verdict PARTIAL)
+
+`Experiments/DomainCLSTraining/` (write-up: `reports/COMPARISON.md`).
+- **What it is:** a trained router for D00/D01..D09 on `data/parquet/DomainBucketing/labels_v0.parquet`.
+  - The data is news title + description, with Gemma-relabelled, Claude-checked silver labels.
+  - Split by date: train 12,541 / val 3,348 / test 4,058.
+- **Winner: `runs/bgem3_v5`** (BGE-M3 + LoRA + auxiliary topic head + temperature).
+  - Test macro-F1 0.699 [0.673, 0.722] vs Laya 0.638. Paired CI of the difference +0.034..+0.088.
+  - In-scope recall 0.915, top-2 hit 0.912, ECE 0.019.
+  - About 870 posts/s on GPU and 30/s on CPU (bf16). The Gemma router does about 2.3/s.
+- **Laya:** only better on in-scope precision (+2 pts) and D04. It costs 5× the compute.
+- **Verdict:** SOUND on the news distribution. **PARTIAL for social posts.**
+  - It agrees with Gemma's in/out decision on 83% of the 11,995 routed posts (κ 0.64), but on the domain for only 56% of posts both call in-scope.
+  - On hand-judged disagreements, each router was right about equally often. Gemma over-routes off-topic posts with topical words.
+  - The classifier misses short off-topic Reddit chatter (it routes it in-scope) and ransomware leak posts (it routes them `none`).
+- **Root cause found: the two routers use different taxonomies.** Gemma's routing prompt (`entity_routing.py:46`) gives domain names only. So wars go to D05 and riots or attacks to D09 under Gemma, while the labelled taxonomy puts both in D01 (about 480 posts).
+- **Ready to use:** `predict.py` `load_router(run).route(texts, none_threshold=0.8)` returns `post_route_v1`-shaped columns. On val, the threshold of 0.8 gives 0.977 in-scope recall and the right L2 in top-2 0.932.
+- `17`/`18` are untouched.
+- **Open:**
+  1. Hand-judge about 150 social posts as gold (over-sample Telegram, bn, ru).
+  2. Add social negatives and ransomware positives, then retrain.
+  3. Give Gemma's routing prompt the per-domain topic list.
+  4. Decide on a `17b` / `post_route_v2` switch.
+- **NER loop:** `run_gemma_ner.sh` was **paused** for this run (`logs/gemma_ner.stop`); it is not resumed.
+- **Bug found (not fixed):** `entity_routing.py:108` renders types as `TYPE [L1]:`. Gemma copies the suffix into the type, so about 64% of `18` extractions fail validation (`invalid:type='LOC_COUNTRY [L1]'`). Failed posts are not marked done, so they will be retried after a fix.
+
 ## 2026-07-30, latest — Fixed-k=33 GPU (cuML) re-clustering + delivery DB refresh (DONE)
 
 Risk/theme remediation below completed (script ran clean overnight, no crash this time).
@@ -230,3 +256,10 @@ See `docs/ALERTING_KEYING.md`.
    `04_nlp_scores.py`) need `PYTHONPATH` pointed at a torch-capable env (see
    `05_HOW_TO_RUN.md` / `requirements.txt` comment) and fall back to CPU cleanly when
    the GPU is contended.
+
+## 2026-10-27 — topic keying experiments (see docs/TOPIC_KEYING_EVALUATION.md)
+Soft top-2 counts, HMM bursts and event chains are wired into `07` as opt-in switches
+(default = legacy, byte-identical). None passed adoption gates: v4_ext fallback precision
+~39% (floor 50%), cluster stability ARI <= 0.26, soft-membership alert churn unexplained,
+HMM unproven on precision. `07` now orders its source reads (previously nondeterministic).
+Verdict for the topic-keyed layer: **PARTIAL/UNSOUND as keys** -- read topic metrics as provisional.

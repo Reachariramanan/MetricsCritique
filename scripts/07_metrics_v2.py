@@ -28,8 +28,13 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib.config import DATA_DIR, DUCKDB_PATH, NO_ENGAGEMENT_PLATFORMS, TS_EXCLUDE_PLATFORMS
+from lib.config import (DATA_DIR, DUCKDB_PATH, GEO_DB_PATH, NO_ENGAGEMENT_PLATFORMS,
+                        TS_EXCLUDE_PLATFORMS)
+from lib.topic_version import TOPIC_DIM_TABLE, TOPIC_EXT_DB_NAME, TOPIC_EXT_TABLE
 from lib import stats_v2 as S
+from lib import event_chains as EC
+from lib import hmm_v1 as H
+from lib import soft_topics as ST
 
 # ==========================================================================
 # PARAMS — the single place to retune. A concurrent statistical review may
@@ -37,6 +42,33 @@ from lib import stats_v2 as S
 # ==========================================================================
 PARAMS: dict = {
     # --- windowing (F4 / D3) -------------------------------------------
+    # Which topic assignment keys every topic metric (plan Step 0).
+    #   "v1"     legacy analytics.post_topic (3 topics + 'unassigned'; ~92% of the corpus
+    #            lands in 'unassigned' -- kept as the default until v4_ext is verified)
+    #   "v4_ext" geo_ontology post_topic_v4_ext (v4 + nearest-centroid fallback, see
+    #            scripts/16); needs `16 --apply` to have run. Override: --topic-source.
+    "topic_source": "v1",
+    # --- plan Steps 1-3 switches. Defaults = legacy behaviour (byte-identical staged
+    # tables); reverting a step means setting its switch back to the default. ---------
+    # Step 1 soft top-2 membership. "soft" needs topic_source="v4_ext" (it reads the
+    # runner-up columns of post_topic_v4_ext). soft_tau / soft_m_hi = None -> chosen by
+    # soft_topics.choose_constants on the FIRST half of the window only (q, w_cut below);
+    # pass both (--soft-tau/--soft-m-hi) to fix them instead. Override: --count-mode.
+    "count_mode": "hard",
+    "soft_tau": None,
+    "soft_m_hi": None,
+    "soft_q": 0.25,                 # share of cross-parent tuning posts that may be split
+    "soft_w_cut": 0.95,             # w1 at the M_HI cutoff
+    # Step 2 burst detector: "kleinberg" (legacy, stats_v2.detect_bursts) or "hmm"
+    # (lib/hmm_v1, pooled per platform, effort exposure, smoothed posteriors).
+    "burst_method": "kleinberg",
+    "hmm_threshold": 0.5,           # burst day iff P(active or decay) > threshold
+    "hmm_bic_margin": 10.0,         # 3 states only if BIC beats 2 states by this much
+    "hmm_max_iter": 200,
+    "hmm_seed": H.HMM_SEED,
+    # Step 3 event chains over grain-1 episodes: "none" (legacy) or "v1" (lib/event_chains).
+    "chain_method": "none",
+    "chain_null_n": 499,            # circular-shift null permutations (noise gate 2)
     "window_start": "2026-06-14",   # first day of the live collection window
     "window_end": None,             # None -> max observed posted day
     # --- count baseline (F1) ------------------------------------------
@@ -186,12 +218,28 @@ def virality_ratio(platform: str, likes, comments, shares, views) -> float:
 # ==========================================================================
 # load
 # ==========================================================================
+def _v4_topic_dim(con) -> pd.DataFrame:
+    """topic_dim_v4 reshaped to the v1 columns the rest of this script expects."""
+    td = con.execute(
+        f"SELECT topic_id, coalesce(parent_topic_id, 'topic') AS domain, name AS topic, "
+        f"size, terms AS top_terms FROM geo.{TOPIC_DIM_TABLE}").df()
+    return td
+
+
 def load_source() -> dict:
-    log(f"opening {DUCKDB_PATH} READ-ONLY")
+    log(f"opening {DUCKDB_PATH} READ-ONLY (topic_source={PARAMS['topic_source']})")
     con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    use_v4 = PARAMS["topic_source"] == "v4_ext"
+    if use_v4:
+        con.execute(f"ATTACH '{GEO_DB_PATH}' AS geo (READ_ONLY)")
+        con.execute(f"ATTACH '{DATA_DIR / TOPIC_EXT_DB_NAME}' AS ext (READ_ONLY)")
+        topic_join = (f"(SELECT post_uid, topic_id, sim_1 AS confidence "
+                      f"FROM ext.{TOPIC_EXT_TABLE}) pt USING (post_uid)")
+    else:
+        topic_join = "post_topic pt USING (post_uid)"
     try:
         posts = con.execute(
-            """
+            f"""
             SELECT pf.post_uid, pf.platform, pf.author_uid, pf.author_name, pf.is_verified,
                    pf.text, pf.lang, pf.posted_at, pf.scraped_at, pf.scrape_lag_days,
                    pf.keyword, pf.hashtags, pf.likes, pf.comments, pf.shares, pf.views,
@@ -200,15 +248,24 @@ def load_source() -> dict:
                    ps.tone_score, ps.tone_valid, ps.hate_score, ps.hate_valid,
                    ps.readability_score, ps.readability_valid
             FROM post_facts pf
-            LEFT JOIN post_topic  pt USING (post_uid)
+            LEFT JOIN {topic_join}
             LEFT JOIN post_scores ps USING (post_uid)
+            ORDER BY pf.post_uid   -- row order fixes the float32 summation order: without it
+                                   -- two identical runs differ in the 7th digit
             """
         ).df()
-        topic_dim = con.execute("SELECT * FROM topic_dim").df()
+        topic_dim = (con.execute("SELECT * FROM topic_dim").df() if not use_v4
+                     else _v4_topic_dim(con))
+        # Soft mode only (validate_params guarantees use_v4): runner-up columns for the
+        # top-2 weights. Not loaded at all in the default (hard) mode.
+        ext = (con.execute(
+            f"SELECT post_uid, topic_id, parent_topic_id, topic_id_2, parent_topic_id_2, "
+            f"margin FROM ext.{TOPIC_EXT_TABLE}").df()
+            if PARAMS["count_mode"] == "soft" else None)
         effort_ce = con.execute("SELECT * FROM collection_effort").df()
         extract = con.execute("SELECT * FROM extract_meta").df()
         emb = con.execute(
-            "SELECT post_uid, platform, embedding FROM post_embeddings"
+            "SELECT post_uid, platform, embedding FROM post_embeddings ORDER BY post_uid"
         ).fetchnumpy()
         v1 = con.execute("SELECT * FROM metrics_daily").df()
     finally:
@@ -254,8 +311,11 @@ def load_source() -> dict:
         mat = mat / np.maximum(norms, 1e-9)
         E = {"uid": np.asarray(emb["post_uid"]), "mat": mat,
              "index": {u: i for i, u in enumerate(emb["post_uid"])}}
-    return {"posts": posts, "topic_dim": topic_dim, "effort_ce": effort_ce,
-            "extract": extract, "emb": E, "v1": v1}
+    out = {"posts": posts, "topic_dim": topic_dim, "effort_ce": effort_ce,
+           "extract": extract, "emb": E, "v1": v1}
+    if ext is not None:
+        out["ext"] = ext
+    return out
 
 
 # ==========================================================================
@@ -408,7 +468,108 @@ def mine_tags(posts: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 # ==========================================================================
 # cell aggregation
 # ==========================================================================
-def aggregate_cells(posts: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+def aggregate_cells(posts: pd.DataFrame, keys: list[str],
+                    weight_col: Optional[str] = None) -> pd.DataFrame:
+    """Cell aggregates. ``weight_col=None`` is the legacy hard path, unchanged.
+
+    With a weight column (count_mode='soft', the long frame from
+    soft_topics.expand_posts) every additive quantity is a weighted sum, so V is
+    V_soft = sum(w) and the per-topic totals still add up to the post count; see
+    `_aggregate_cells_weighted` for which columns stay hard.
+    """
+    if weight_col is None:
+        return _aggregate_cells_hard(posts, keys)
+    return _aggregate_cells_weighted(posts, keys, weight_col)
+
+
+def _finish_cells(base: pd.DataFrame) -> pd.DataFrame:
+    """Derived per-cell means (shared by the hard and weighted aggregations)."""
+    base["tone_mean"] = base["tone_sum"] / base["tone_n"].replace(0, np.nan)
+    base["hate_mean"] = base["hate_sum"] / base["hate_n"].replace(0, np.nan)
+    base["hate_prevalence"] = base["hate_hits"] / base["hate_n"].replace(0, np.nan)
+    base["readability_mean"] = base["read_sum"] / base["read_n"].replace(0, np.nan)
+    base["readability_coverage"] = base["read_cov"]
+    base["virality_pct_raw"] = base["vir_sum"] / base["vir_n"].replace(0, np.nan)
+    base["reach_audience_norm"] = base["reach_norm_sum"] / base["reach_norm_n"].replace(0, np.nan)
+    base["reach_proxy"] = np.where(
+        base["views_sum"].fillna(0) > 0, base["views_sum"], np.log1p(base["E_sum"].fillna(0))
+    )
+    return base
+
+
+_W_COLS = ("tone_v", "hate_v", "read_v", "virality_pct_post", "views", "E_sum",
+           "reach_audience_norm_post", "confidence")
+
+
+def _aggregate_cells_weighted(posts: pd.DataFrame, keys: list[str],
+                              weight_col: str) -> pd.DataFrame:
+    """Weighted cell aggregation (patch from lib/soft_topics.py's docstring).
+
+    Weighted: V (= sum w), every *_sum / *_n / *_ss (the *_n become effective n),
+    hate_hits, read_cov, views_sum, E_sum, mean_confidence, and author_entropy /
+    author_1_hhi (fed per-author weight totals). Hard (not split): n_authors is the
+    effective count sum_a min(1, sum of a's weights) (<= V, never inflated by slivers),
+    plus n_authors_primary / V_primary on topic_rank == 1 rows; duplicate_rate is the
+    unweighted rule on rows with w >= 0.5. Requires a `topic_rank` column.
+    """
+    W = "_w"
+    p = posts.assign(_w=posts[weight_col].astype(float))
+    for c in _W_COLS:
+        x = p[c].astype(float)
+        p["_wx_" + c] = x * p[W]                         # NaN stays NaN (skipped by sum)
+        p["_wn_" + c] = p[W].where(x.notna(), 0.0)       # weight of NON-NULL rows
+    p["_wx_tone_ss"] = p["tone_v"].astype(float) ** 2 * p[W]
+    p["_wx_hate_ss"] = p["hate_v"].astype(float) ** 2 * p[W]
+    p["_wx_vir_ss"] = p["virality_pct_post"].astype(float) ** 2 * p[W]
+    p["_whit"] = p[W].where(p["hate_v"].astype(float) >= 0.5, 0.0)   # NaN >= .5 is False
+    p["_wread_ok"] = p["read_ok"].astype(float) * p[W]
+    p["_prim"] = (p["topic_rank"] == 1).astype(float)
+    g = p.groupby(keys, dropna=False)
+    base = g.agg(
+        V=(W, "sum"),
+        V_primary=("_prim", "sum"),
+        tone_sum=("_wx_tone_v", "sum"), tone_n=("_wn_tone_v", "sum"),
+        hate_sum=("_wx_hate_v", "sum"), hate_n=("_wn_hate_v", "sum"),
+        hate_hits=("_whit", "sum"),
+        read_sum=("_wx_read_v", "sum"), read_n=("_wn_read_v", "sum"),
+        read_cov_num=("_wread_ok", "sum"),
+        vir_sum=("_wx_virality_pct_post", "sum"), vir_n=("_wn_virality_pct_post", "sum"),
+        views_sum=("_wx_views", "sum"),
+        E_sum=("_wx_E_sum", "sum"),
+        reach_norm_sum=("_wx_reach_audience_norm_post", "sum"),
+        reach_norm_n=("_wn_reach_audience_norm_post", "sum"),
+        conf_sum=("_wx_confidence", "sum"), conf_n=("_wn_confidence", "sum"),
+        tone_ss=("_wx_tone_ss", "sum"), hate_ss=("_wx_hate_ss", "sum"),
+        vir_ss=("_wx_vir_ss", "sum"),
+    ).reset_index()
+    base["read_cov"] = base["read_cov_num"] / base["V"].replace(0, np.nan)
+    base["mean_confidence"] = base["conf_sum"] / base["conf_n"].replace(0, np.nan)
+    base = base.drop(columns=["read_cov_num", "conf_sum", "conf_n"])
+
+    def _div(df: pd.DataFrame) -> pd.Series:
+        aw = df.groupby(df["author_uid"].fillna("unknown"))["_w"].sum().to_numpy(dtype=float)
+        named = df[df["author_uid"].notna()]
+        n_eff = float(np.minimum(named.groupby("author_uid")["_w"].sum().to_numpy(float),
+                                 1.0).sum())
+        tn = df.loc[df["_w"] >= 0.5, "text_norm"]
+        tn = tn[tn.str.len() > 20]
+        dup = float(1.0 - tn.nunique() / len(tn)) if len(tn) else np.nan
+        return pd.Series({
+            "author_entropy": S.shannon_entropy(aw),
+            "author_1_hhi": 1.0 - S.hhi(aw),
+            "duplicate_rate": dup,
+            "n_authors": n_eff,
+            "n_authors_primary": float(df.loc[df["topic_rank"] == 1, "author_uid"].nunique()),
+        })
+
+    div = p.groupby(keys, dropna=False)[["author_uid", "text_norm", "_w", "topic_rank"]].apply(
+        _div, include_groups=False
+    ).reset_index()
+    base = base.merge(div, on=keys, how="left")
+    return _finish_cells(base)
+
+
+def _aggregate_cells_hard(posts: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     g = posts.groupby(keys, dropna=False)
 
     def _sq(col):
@@ -454,18 +615,7 @@ def aggregate_cells(posts: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
         _div, include_groups=False
     ).reset_index()
     base = base.merge(div, on=keys, how="left")
-
-    base["tone_mean"] = base["tone_sum"] / base["tone_n"].replace(0, np.nan)
-    base["hate_mean"] = base["hate_sum"] / base["hate_n"].replace(0, np.nan)
-    base["hate_prevalence"] = base["hate_hits"] / base["hate_n"].replace(0, np.nan)
-    base["readability_mean"] = base["read_sum"] / base["read_n"].replace(0, np.nan)
-    base["readability_coverage"] = base["read_cov"]
-    base["virality_pct_raw"] = base["vir_sum"] / base["vir_n"].replace(0, np.nan)
-    base["reach_audience_norm"] = base["reach_norm_sum"] / base["reach_norm_n"].replace(0, np.nan)
-    base["reach_proxy"] = np.where(
-        base["views_sum"].fillna(0) > 0, base["views_sum"], np.log1p(base["E_sum"].fillna(0))
-    )
-    return base
+    return _finish_cells(base)
 
 
 # ==========================================================================
@@ -519,6 +669,95 @@ def apply_eb(cells: pd.DataFrame, group_key: str, P: dict) -> dict:
 
 
 # ==========================================================================
+# HMM burst path (plan Step 2; PARAMS["burst_method"] == "hmm")
+# ==========================================================================
+def _series_calendar(plat, first, platform_days: dict, window_start: date,
+                     window_end: date) -> list:
+    """Platform-active in-window days from the series' first appearance (the calendar
+    compute_panel reindexes every series onto; shared with the HMM pre-pass)."""
+    if plat is not None:
+        cal = sorted(d for d in platform_days.get(plat, set())
+                     if window_start <= d <= window_end)
+    else:
+        cal = sorted(d for d in platform_days["__any__"]
+                     if window_start <= d <= window_end)
+    return [d for d in cal if d >= first]
+
+
+def hmm_exposure(effort: pd.DataFrame, platform_days: dict, window_start: date,
+                 window_end: date, cap: float) -> dict:
+    """{(pool_key, day): exposure} for the HMM's log-exposure offset.
+
+    Per platform: daily effort (observed active channels) divided by its mean over the
+    platform's in-window active days, so exposure has mean ~1 and the pooled lifts and
+    per-series base stay on the count scale. Clipped to [1/cap, cap] with the same
+    `exposure_scale_cap` as the F2 guard in compute_panel, for the same reason: effort is
+    distinct authors on the day itself, so it is endogenous to a real event (a burst
+    recruits authors); uncapped, the offset would explain the burst away. Pool key
+    "__all__" (platform-agnostic grains) uses the total effort across TS platforms.
+    """
+    out: dict = {}
+    eff_map = {(r.platform, r.day): float(r.effort) for r in effort.itertuples()}
+    tot = effort.groupby("day")["effort"].sum().to_dict()
+    for pk, days in platform_days.items():
+        wd = sorted(d for d in days if window_start <= d <= window_end)
+        if not wd:
+            continue
+        if pk == "__any__":
+            vals = {d: max(1.0, float(tot.get(d, np.nan))) for d in wd}
+            key = "__all__"
+        else:
+            vals = {d: max(1.0, eff_map.get((pk, d), np.nan)) for d in wd}
+            key = pk
+        m = float(np.nanmean(list(vals.values())))
+        for d, v in vals.items():
+            e = v / m if (np.isfinite(v) and m > 0) else 1.0
+            out[(key, d)] = float(np.clip(e, 1.0 / cap, cap))
+    return out
+
+
+def fit_hmm_pools(live: pd.DataFrame, series_keys: list[str], expo: dict, P: dict, *,
+                  platform_days: dict, window_start: date, window_end: date
+                  ) -> tuple[dict, dict, dict]:
+    """Fit one pooled HMM per platform on the in-window series, BEFORE the per-series
+    loop. Returns (params_by_pool, base_by_series_gid, diagnostics_by_pool).
+
+    n_states by BIC (hmm_v1.select_states: 3 only if it beats 2 by `hmm_bic_margin`).
+    The fit sees the whole in-window series, so the smoothed posteriors it drives are
+    RETROSPECTIVE (the episode table), never a causal alert.
+    """
+    has_plat = "platform" in series_keys
+    pools: dict[str, list] = {}
+    for gid, g in live.groupby(series_keys, dropna=False):
+        gid = gid if isinstance(gid, tuple) else (gid,)
+        plat = dict(zip(series_keys, gid)).get("platform") if has_plat else None
+        cal = _series_calendar(plat, min(g["day"]), platform_days, window_start, window_end)
+        if not cal:
+            continue
+        pk = plat if plat is not None else "__all__"
+        v = g.set_index("day")["V"].reindex(cal).fillna(0.0).to_numpy(dtype=float)
+        e = np.array([expo.get((pk, d), 1.0) for d in cal], dtype=float)
+        pools.setdefault(pk, []).append((gid, v, e))
+    params, bases, diag = {}, {}, {}
+    for pk in sorted(pools, key=str):
+        items = pools[pk]
+        p, sel = H.select_states(
+            [x for _, x, _ in items], [e for _, _, e in items],
+            margin=P["hmm_bic_margin"], seed=P["hmm_seed"], max_iter=P["hmm_max_iter"],
+            pool_key=str(pk), min_days=P["burst_min_days_kleinberg"],
+            min_total=P["burst_min_total_kleinberg"], min_mean=P["burst_min_mean_kleinberg"])
+        params[pk] = p
+        for (gid, _, _), b in zip(items, p.series_base):
+            bases[gid] = b
+        d = {k: v for k, v in p.to_dict().items() if k != "series_base"}
+        d.update({"bic_2": sel["bic_2"] if np.isfinite(sel["bic_2"]) else None,
+                  "bic_3": sel["bic_3"] if np.isfinite(sel["bic_3"]) else None,
+                  "bic_margin": sel["margin"], "n_series_in_pool": len(items)})
+        diag[str(pk)] = d
+    return params, bases, diag
+
+
+# ==========================================================================
 # the single production time-series path (D5: harness must call THIS)
 # ==========================================================================
 def compute_panel(
@@ -552,19 +791,33 @@ def compute_panel(
     hist = cells.loc[~in_win].copy()
     live = cells.loc[in_win].copy()
 
+    # ---- HMM (burst_method='hmm'): pooled fit per platform before the loop -----
+    # Retrospective only: detect_bursts_hmm below runs the SMOOTHED posteriors with
+    # parameters fitted on the whole in-window series, which is right for the episode
+    # table and wrong for live alerting. The causal path (hmm_v1.filtered_posteriors /
+    # causal=True) is deliberately NOT wired yet, because (1) it needs parameters and a
+    # per-series base frozen on a training prefix (hmm_v1.fit_on_prefix) with an
+    # expanding-refit schedule, which this one-shot batch run has no state for -- fitting
+    # on the full window and then "filtering" would still leak the future through the
+    # parameters; and (2) alerts are keyed on surprise_q (NB baseline + BH-FDR), not on
+    # burst_state: making an HMM state an alert input needs its own FDR treatment and the
+    # noise gates (plan gates 1 and 7) to pass first.
+    use_hmm = P.get("burst_method", "kleinberg") == "hmm"
+    if use_hmm:
+        t_fit = datetime.now(timezone.utc)
+        hmm_expo = hmm_exposure(effort, platform_days, window_start, window_end,
+                                P["exposure_scale_cap"])
+        hmm_params, hmm_base, diag["hmm_pools"] = fit_hmm_pools(
+            live, series_keys, hmm_expo, P, platform_days=platform_days,
+            window_start=window_start, window_end=window_end)
+        diag["hmm_fit_seconds"] = round((datetime.now(timezone.utc) - t_fit).total_seconds(), 1)
+
     for gid, g in live.groupby(series_keys, dropna=False):
         gid = gid if isinstance(gid, tuple) else (gid,)
         diag["n_series"] += 1
         plat = dict(zip(series_keys, gid)).get("platform") if has_plat else None
         # calendar: platform-active days inside the window, from first appearance
-        if plat is not None:
-            cal = sorted(d for d in platform_days.get(plat, set())
-                         if window_start <= d <= window_end)
-        else:
-            cal = sorted(d for d in platform_days["__any__"]
-                         if window_start <= d <= window_end)
-        first = min(g["day"])
-        cal = [d for d in cal if d >= first]
+        cal = _series_calendar(plat, min(g["day"]), platform_days, window_start, window_end)
         if not cal:
             continue
         s = g.set_index("day").reindex(cal)
@@ -692,14 +945,31 @@ def compute_panel(
             diag["burst_methods"]["ungated_insufficient_support"] = (
                 diag["burst_methods"].get("ungated_insufficient_support", 0) + 1)
         else:
-            br = S.detect_bursts(
-                counts,
-                baseline_mu=s["baseline_mu"].to_numpy(dtype=float),
-                min_days_kleinberg=P["burst_min_days_kleinberg"],
-                min_total_kleinberg=P["burst_min_total_kleinberg"],
-                min_mean_kleinberg=P["burst_min_mean_kleinberg"],
-                s=P["burst_s"], gamma=P["burst_gamma"], cusum_h=P["burst_cusum_h"],
-            )
+            if use_hmm:
+                # Same BurstResult contract as detect_bursts, so extract_episodes and
+                # the onset/decay fits below are unchanged. Below HMM support -> Poisson
+                # CUSUM. burst_intensity becomes the burst posterior in [0, 1] (not
+                # Kleinberg's LLR weight); episode `level` = peak posterior.
+                pk = plat if plat is not None else "__all__"
+                br = H.detect_bursts_hmm(
+                    counts, [hmm_expo.get((pk, d), 1.0) for d in s["day"]],
+                    hmm_params[pk], base=hmm_base.get(gid), causal=False,
+                    threshold=P["hmm_threshold"],
+                    baseline_mu=s["baseline_mu"].to_numpy(dtype=float),
+                    min_days=P["burst_min_days_kleinberg"],
+                    min_total=P["burst_min_total_kleinberg"],
+                    min_mean=P["burst_min_mean_kleinberg"],
+                    s=P["burst_s"], cusum_h=P["burst_cusum_h"],
+                )
+            else:
+                br = S.detect_bursts(
+                    counts,
+                    baseline_mu=s["baseline_mu"].to_numpy(dtype=float),
+                    min_days_kleinberg=P["burst_min_days_kleinberg"],
+                    min_total_kleinberg=P["burst_min_total_kleinberg"],
+                    min_mean_kleinberg=P["burst_min_mean_kleinberg"],
+                    s=P["burst_s"], gamma=P["burst_gamma"], cusum_h=P["burst_cusum_h"],
+                )
             s["burst_state"] = br.state
             s["burst_intensity"] = br.intensity
             s["burst_method"] = br.method
@@ -909,13 +1179,186 @@ def make_novelty_fn(posts: pd.DataFrame, emb: Optional[dict], P: dict):
 
 
 # ==========================================================================
+# switches: validation, soft membership (Step 1), event chains (Step 3)
+# ==========================================================================
+SWITCH_CHOICES = {"topic_source": ("v1", "v4_ext"), "count_mode": ("hard", "soft"),
+                  "burst_method": ("kleinberg", "hmm"), "chain_method": ("none", "v1")}
+
+
+def validate_params(P: dict) -> None:
+    """Fail loudly on an impossible switch combination, before any data is read."""
+    for k, ok in SWITCH_CHOICES.items():
+        if P.get(k) not in ok:
+            raise ValueError(f"PARAMS[{k!r}]={P.get(k)!r}; must be one of {ok}")
+    if P["count_mode"] == "soft" and P["topic_source"] != "v4_ext":
+        raise ValueError(
+            "count_mode='soft' needs topic_source='v4_ext': soft weights come from the "
+            f"runner-up columns (topic_id_2, margin, parents) of geo.{TOPIC_EXT_TABLE}, "
+            f"written by scripts/16_assign_new_posts_topics.py --apply; topic_source="
+            f"{P['topic_source']!r} has no runner-up. Pass --topic-source v4_ext.")
+    if (P["soft_tau"] is None) != (P["soft_m_hi"] is None):
+        raise ValueError("set both soft_tau and soft_m_hi, or neither (auto-chosen on the "
+                         "first half of the window)")
+
+
+def soft_setup(posts: pd.DataFrame, ext: pd.DataFrame, P: dict, window_start: date,
+               window_end: date) -> tuple[pd.DataFrame, dict]:
+    """Choose (tau, m_hi) on the FIRST half of the window only, then expand posts.
+
+    Returns (posts_soft long frame with topic_rank / w, info dict to persist).
+    """
+    ext1 = ext.drop_duplicates("post_uid", keep="first")
+    win = posts.loc[posts["day"].between(window_start, window_end), ["post_uid", "day"]]
+    tune = win.merge(ext1, on="post_uid", how="inner").reset_index(drop=True)
+    first, second = ST.split_halves(tune["day"]) if len(tune) else (np.zeros(0, bool),) * 2
+    info: dict = {"n_window_posts": int(len(win)), "n_window_posts_in_ext": int(len(tune))}
+    if len(tune):
+        info["tune_days"] = [str(min(tune.loc[first, "day"])), str(max(tune.loc[first, "day"]))]
+        info["eval_days"] = ([str(min(tune.loc[second, "day"])),
+                              str(max(tune.loc[second, "day"]))] if second.any() else None)
+    if P["soft_tau"] is None:
+        const = ST.choose_constants(tune["margin"].to_numpy(dtype=float),
+                                    ST.pair_features(tune)["cross_parent"].to_numpy(),
+                                    first, q=P["soft_q"], w_cut=P["soft_w_cut"])
+        info.update(const)
+        info["constants_source"] = "soft_topics.choose_constants on the first half of the window"
+    else:
+        info.update({"tau": float(P["soft_tau"]), "m_hi": float(P["soft_m_hi"]),
+                     "constants_source": "fixed by PARAMS/CLI"})
+    posts_soft = ST.expand_posts(posts, ext1, tau=info["tau"], m_hi=info["m_hi"])
+    info["expand"] = dict(posts_soft.attrs.get("soft_topics", {}))
+    return posts_soft, info
+
+
+def build_chains(episodes: pd.DataFrame, members: pd.DataFrame, emb: Optional[dict],
+                 topic_dim: pd.DataFrame, P: dict) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Event chains (plan Step 3) over grain-1 (topic x platform) episodes.
+
+    members: post_uid, author_uid, topic_id, w, day, platform (soft long frame, or hard
+    posts with w = 1). Centroid per topic = w-weighted mean of its members' unit
+    embeddings (src['emb']); neighbours = each topic's top-2 other topics by centroid
+    cosine over ALL topics with an embedded member; parents from TOPIC_DIM_TABLE's
+    parent_topic_id (topic_source='v4_ext' only; v1 has no hierarchy). 'unassigned' is
+    not a topic and is excluded: same-topic cross-platform linking on it would chain the
+    whole unclustered remainder of the corpus.
+    """
+    info: dict = {"n_episodes_in": int(len(episodes))}
+    ep = episodes[episodes["topic_id"].notna()
+                  & (episodes["topic_id"].astype(str) != ST.UNASSIGNED)].copy()
+    info["n_episodes_excluded_unassigned"] = int(len(episodes) - len(ep))
+    mem = members[members["topic_id"].notna()
+                  & (members["topic_id"].astype(str) != ST.UNASSIGNED)]
+    centroids: dict = {}
+    if emb is not None and len(mem):
+        idx = emb["index"]
+        has = mem["post_uid"].isin(idx.keys())
+        sub = mem.loc[has, ["post_uid", "topic_id", "w"]]
+        rows = np.fromiter((idx[u] for u in sub["post_uid"]), dtype=np.int64, count=len(sub))
+        wts = sub["w"].to_numpy(dtype=float)
+        for t, pos in sub.groupby("topic_id").indices.items():
+            c = (emb["mat"][rows[pos]] * wts[pos, None]).sum(axis=0)
+            nrm = float(np.linalg.norm(c))
+            if nrm > 0:
+                centroids[str(t)] = c / nrm
+    tids = sorted(centroids)
+    neighbours: dict = {}
+    if len(tids) > 1:
+        C = np.vstack([centroids[t] for t in tids])
+        sim = C @ C.T
+        np.fill_diagonal(sim, -np.inf)
+        for i, t in enumerate(tids):
+            order = np.argsort(-sim[i], kind="mergesort")[:EC.N_NEIGHBOURS]
+            neighbours[t] = [tids[j] for j in order]
+    parents: dict = {}
+    if P["topic_source"] == "v4_ext" and "domain" in topic_dim.columns:
+        # _v4_topic_dim maps a NULL parent to the placeholder 'topic'
+        parents = {str(t): (None if d == "topic" else d)
+                   for t, d in zip(topic_dim["topic_id"], topic_dim["domain"])}
+    links, chains = EC.build_event_chains(ep, mem, neighbours, parents, centroids)
+    null = EC.circular_shift_null(ep, mem, n_perm=P["chain_null_n"], seed=P["seed"],
+                                  neighbours=neighbours, parents=parents, centroids=centroids)
+    info.update({
+        "n_episodes_used": int(len(ep)), "n_topics_with_centroid": len(tids),
+        "n_links": int(len(links)), "n_chains": int(chains["chain_id"].nunique()) if len(chains) else 0,
+        "n_episodes_in_chains": int(len(chains)),
+        "routes": ({str(k): int(v) for k, v in links["route"].value_counts().items()}
+                   if len(links) else {}),
+        "topic_relations": ({str(k): int(v) for k, v in
+                             links["topic_relation"].value_counts().items()} if len(links) else {}),
+        "constants": {"l_days": EC.L_DAYS, "theta": EC.THETA, "theta_cos": EC.THETA_COS,
+                      "k_authors": EC.K_AUTHORS, "n_neighbours": EC.N_NEIGHBOURS},
+        "membership": "soft (w)" if P["count_mode"] == "soft" else "hard (w=1)",
+        "has_parents": bool(parents),
+        "circular_shift_null": {k: v for k, v in null.items() if k != "null"},
+    })
+    # explicit string ids (an all-NULL id column must not be inferred as INTEGER)
+    for c in ("src_episode", "dst_episode", "topic_relation", "route", "chain_id"):
+        if c in links.columns:
+            links[c] = links[c].astype(object)
+    for c in ("chain_id", "episode_id"):
+        if c in chains.columns:
+            chains[c] = chains[c].astype(object)
+    return links, chains, info
+
+
+def parse_args(argv: Optional[list] = None):
+    import argparse
+    ap = argparse.ArgumentParser(description="Metrics v2 build")
+    ap.add_argument("--topic-source", choices=SWITCH_CHOICES["topic_source"],
+                    default=PARAMS["topic_source"],
+                    help="topic assignment keying the topic metrics (default: %(default)s)")
+    ap.add_argument("--count-mode", choices=SWITCH_CHOICES["count_mode"],
+                    default=PARAMS["count_mode"],
+                    help="hard single-label counts or soft top-2 weights (needs v4_ext)")
+    ap.add_argument("--soft-tau", type=float, default=PARAMS["soft_tau"],
+                    help="fix tau (with --soft-m-hi); default: chosen on the window's first half")
+    ap.add_argument("--soft-m-hi", type=float, default=PARAMS["soft_m_hi"],
+                    help="fix M_HI (with --soft-tau)")
+    ap.add_argument("--burst-method", choices=SWITCH_CHOICES["burst_method"],
+                    default=PARAMS["burst_method"], help="burst detector (default: %(default)s)")
+    ap.add_argument("--chain-method", choices=SWITCH_CHOICES["chain_method"],
+                    default=PARAMS["chain_method"], help="event chains (default: %(default)s)")
+    ap.add_argument("--stage-dir", type=Path, default=STAGE_DIR,
+                    help="where staged parquet is written (default: %(default)s). Use a "
+                         "scratch dir for experiments so data/metrics_stage is untouched.")
+    ap.add_argument("--tag", default=None,
+                    help="free-text run tag, appended to run_id and recorded in run_meta")
+    return ap.parse_args(argv)
+
+
+def apply_args(args, P: dict) -> None:
+    P["topic_source"] = args.topic_source
+    P["count_mode"] = args.count_mode
+    P["soft_tau"] = args.soft_tau
+    P["soft_m_hi"] = args.soft_m_hi
+    P["burst_method"] = args.burst_method
+    P["chain_method"] = args.chain_method
+
+
+def write_stage(outputs: dict, params_json: dict, stage_dir: Path) -> None:
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    for name, df in outputs.items():
+        path = stage_dir / f"{name}.parquet"
+        (df if len(df) else pd.DataFrame({"_empty": []})).to_parquet(path, index=False)
+        log(f"  staged {name:22s} rows={len(df):>7,}  -> {path.name}")
+    (stage_dir / "run_params.json").write_text(json.dumps(params_json, default=str, indent=2))
+
+
+# ==========================================================================
 # main
 # ==========================================================================
-def main() -> int:
+def main(argv: Optional[list] = None) -> int:
+    args = parse_args(argv)
+    apply_args(args, PARAMS)
+    validate_params(PARAMS)
+    stage_dir = Path(args.stage_dir).resolve()
     np.random.seed(PARAMS["seed"])
     P = PARAMS
     t0 = datetime.now(timezone.utc)
-    STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    log(f"stage dir {stage_dir}  switches: topic_source={P['topic_source']} "
+        f"count_mode={P['count_mode']} burst_method={P['burst_method']} "
+        f"chain_method={P['chain_method']}" + (f" tag={args.tag}" if args.tag else ""))
 
     log("running stats_v2 self-checks ...")
     checks = S.run_self_checks()
@@ -948,9 +1391,25 @@ def main() -> int:
 
     novelty_fn = make_novelty_fn(posts, src["emb"], P)
 
+    # ---------------- Step 1: soft top-2 membership (count_mode='soft') ----
+    # Only the TOPIC grains (1 and 2) use the weighted long frame. Tags, effort,
+    # platform_days and novelty stay on the hard `posts`: they are properties of the
+    # post, not of a topic.
+    posts_soft, soft_info = None, None
+    if P["count_mode"] == "soft":
+        posts_soft, soft_info = soft_setup(posts, src["ext"], P, window_start, window_end)
+        log(f"soft membership: tau={soft_info['tau']:.5f} m_hi={soft_info['m_hi']:.5f} "
+            f"({soft_info['constants_source']}); ambiguous posts="
+            f"{soft_info['expand'].get('n_ambiguous', 0):,}/{len(posts):,}")
+
+    def topic_cells(keys: list[str]) -> pd.DataFrame:
+        if posts_soft is not None:
+            return aggregate_cells(posts_soft, keys, weight_col="w")
+        return aggregate_cells(posts, keys)
+
     # ---------------- grain 1: topic x platform x day ------------------
     log("grain 1/3: topic x platform x day")
-    cells_tp = aggregate_cells(posts, ["topic_id", "platform", "day"])
+    cells_tp = topic_cells(["topic_id", "platform", "day"])
     eb_tp = apply_eb(cells_tp, "topic_id", P)
     panel_tp, episodes, diag_tp = compute_panel(
         cells_tp, ["topic_id", "platform", "day"], effort, P,
@@ -958,16 +1417,22 @@ def main() -> int:
         window_end=window_end, novelty_fn=novelty_fn)
     log(f"  metrics_daily rows={len(panel_tp):,} episodes={len(episodes):,} "
         f"burst={diag_tp['burst_methods']}")
+    if "hmm_fit_seconds" in diag_tp:
+        log(f"  hmm pooled fit {diag_tp['hmm_fit_seconds']}s: " + "; ".join(
+            f"{k}: K={v['n_states']} {v['dist']} lift={[round(x, 2) for x in v['lift']]} "
+            f"n_series={v['n_series']}" for k, v in diag_tp["hmm_pools"].items()))
 
     # ---------------- grain 2: topic x day (platform rolled up) --------
     log("grain 2/3: topic x day")
-    cells_t = aggregate_cells(posts, ["topic_id", "day"])
+    cells_t = topic_cells(["topic_id", "day"])
     eb_t = apply_eb(cells_t, "topic_id", P)
     panel_t, episodes_t, diag_t = compute_panel(
         cells_t, ["topic_id", "day"], effort, P,
         platform_days=platform_days, window_start=window_start,
         window_end=window_end, novelty_fn=novelty_fn)
     log(f"  metrics_topic_day rows={len(panel_t):,} burst={diag_t['burst_methods']}")
+    if "hmm_fit_seconds" in diag_t:
+        log(f"  hmm pooled fit {diag_t['hmm_fit_seconds']}s")
 
     # ---------------- grain 3: tag x platform x day --------------------
     log("grain 3/3: tag x platform x day")
@@ -999,6 +1464,8 @@ def main() -> int:
         window_end=window_end, novelty_fn=None)
     log(f"  tag_dim={len(tag_dim):,} ts_tags={len(ts_tags):,} "
         f"tag_metrics_daily rows={len(panel_tag):,} burst={diag_tag['burst_methods']}")
+    if "hmm_fit_seconds" in diag_tag:
+        log(f"  hmm pooled fit {diag_tag['hmm_fit_seconds']}s")
 
     # ---------------- coordination flag --------------------------------
     for pnl in (panel_tp, panel_t, panel_tag):
@@ -1085,7 +1552,7 @@ def main() -> int:
     def _variant(name: str, over: dict):
         Pv = {**P, **over}
         pv, _, _ = compute_panel(
-            aggregate_cells(posts, ["topic_id", "platform", "day"]),
+            topic_cells(["topic_id", "platform", "day"]),
             ["topic_id", "platform", "day"], effort, Pv,
             platform_days=platform_days, window_start=window_start,
             window_end=window_end, novelty_fn=novelty_fn)
@@ -1238,8 +1705,30 @@ def main() -> int:
                          f"V>={P['support_min_v']}"),
     }
 
+    # ---------------- Step 3: event chains (chain_method='v1') ---------
+    chain_links = event_chain = chain_info = None
+    if P["chain_method"] == "v1":
+        log("event chains v1 over grain-1 episodes")
+        tc = datetime.now(timezone.utc)
+        members = (posts_soft if posts_soft is not None
+                   else posts.assign(w=1.0))[["post_uid", "author_uid", "topic_id", "w",
+                                              "day", "platform"]]
+        if len(episodes):
+            chain_links, event_chain, chain_info = build_chains(
+                episodes, members, src["emb"], src["topic_dim"], P)
+        else:
+            chain_links = pd.DataFrame(columns=EC._PAIR_COLS + ["chain_id"])
+            event_chain = pd.DataFrame(columns=["chain_id", "episode_id", "order", "link_score",
+                                                "n_topics", "n_platforms", "n_authors"])
+            chain_info = {"n_episodes_in": 0}
+        chain_info["seconds"] = round((datetime.now(timezone.utc) - tc).total_seconds(), 1)
+        log(f"  links={chain_info.get('n_links', 0)} chains={chain_info.get('n_chains', 0)} "
+            f"null={chain_info.get('circular_shift_null')} ({chain_info['seconds']}s)")
+
     # ---------------- run_meta ----------------------------------------
     run_id = f"{t0.strftime('%Y%m%dT%H%M%SZ')}_metrics_v2"
+    if args.tag:
+        run_id += f"_{args.tag}"
     params_json = {
         "params": {k: v for k, v in P.items()},
         "burst_method_counts": {
@@ -1272,6 +1761,35 @@ def main() -> int:
         "hate_caveat": ("uncalibrated: a war/terror corpus over-fires toxicity models; "
                         "reports/calibration_sample.csv is not yet hand-labelled"),
     }
+    # Switch provenance. Keys are added ONLY when a switch is off its default, so the
+    # default run's params_json differs from the pre-switch code only by the new PARAMS.
+    if args.tag:
+        params_json["tag"] = args.tag
+    if args.stage_dir is not None and stage_dir != STAGE_DIR.resolve():
+        params_json["stage_dir"] = str(stage_dir)
+    if soft_info is not None:
+        params_json["soft_topics"] = soft_info
+        params_json["soft_caveats"] = (
+            "V is V_soft = sum(w) (float); NB tail p-values ceil a fractional count "
+            "(S.exceedance_p); dispersion is re-estimated on soft counts by the same "
+            "trailing fit; neighbour topics are positively correlated (BH valid under "
+            "PRDS). n_authors is effective (sum_a min(1, w_a)); tag grain stays hard.")
+    if P["burst_method"] == "hmm":
+        params_json["hmm_fits"] = {"topic_platform": diag_tp.get("hmm_pools"),
+                                   "topic": diag_t.get("hmm_pools"),
+                                   "tag_platform": diag_tag.get("hmm_pools")}
+        params_json["burst_method_rule"] = (
+            "hmm_v1: pooled per-platform count HMM (Poisson or NB by BIC; 2 vs 3 states by "
+            f"BIC, margin {P['hmm_bic_margin']}), exposure = platform-day effort / its "
+            f"in-window mean clipped to [1/{P['exposure_scale_cap']}, "
+            f"{P['exposure_scale_cap']}], SMOOTHED posteriors (retrospective), burst day iff "
+            f"P(burst) > {P['hmm_threshold']}; below HMM support (n_days>="
+            f"{P['burst_min_days_kleinberg']}, total>={P['burst_min_total_kleinberg']}, "
+            f"mean>={P['burst_min_mean_kleinberg']}) Poisson CUSUM as before. "
+            "burst_intensity = burst posterior in [0,1]. Causal (filtered) mode not wired. "
+            "null_control still runs the legacy Kleinberg permutation test.")
+    if chain_info is not None:
+        params_json["event_chains"] = chain_info
     run_meta = pd.DataFrame([{
         "run_id": run_id,
         "created_at": t0,
@@ -1286,9 +1804,15 @@ def main() -> int:
 
     # ---------------- assertions before publish -----------------------
     log("post-build assertions")
-    assert int(panel_tp.loc[panel_tp["in_window"], "V"].sum()) == int(
-        posts[posts["day"].between(window_start, window_end)].shape[0]
-    ), "in-window V does not reconcile with post count (double counting?)"
+    n_win_posts = int(posts[posts["day"].between(window_start, window_end)].shape[0])
+    if P["count_mode"] == "soft":
+        # V is a float sum of weights (each post's weights sum to exactly 1)
+        v_win = float(panel_tp.loc[panel_tp["in_window"], "V"].sum())
+        assert abs(v_win - n_win_posts) < 1e-6, (
+            f"in-window V_soft={v_win!r} does not reconcile with {n_win_posts} posts")
+    else:
+        assert int(panel_tp.loc[panel_tp["in_window"], "V"].sum()) == n_win_posts, \
+            "in-window V does not reconcile with post count (double counting?)"
     dup = panel_tp.duplicated(subset=["topic_id", "platform", "day"]).sum()
     assert dup == 0, f"metrics_daily has {dup} duplicate grain keys"
     bad = panel_tp[(~panel_tp["support_ok"]) & panel_tp["surprise"].notna()]
@@ -1341,14 +1865,17 @@ def main() -> int:
         "null_control": pd.DataFrame([{k: v for k, v in r.items() if k != "acf"}
                                       for r in null_ctrl]),
     }
-    for name, df in outputs.items():
-        path = STAGE_DIR / f"{name}.parquet"
-        (df if len(df) else pd.DataFrame({"_empty": []})).to_parquet(path, index=False)
-        log(f"  staged {name:22s} rows={len(df):>7,}  -> {path.name}")
-    (STAGE_DIR / "run_params.json").write_text(json.dumps(params_json, default=str, indent=2))
+    if chain_info is not None:
+        # new optional tables; 08 publishes them with explicit DDL only when staged
+        outputs["event_chain_v1"] = event_chain
+        outputs["chain_links_v1"] = chain_links
+    write_stage(outputs, params_json, stage_dir)
+    if soft_info is not None:
+        (stage_dir / "soft_constants.json").write_text(
+            json.dumps(soft_info, default=str, indent=2, sort_keys=True))
     log(f"done in {(datetime.now(timezone.utc) - t0).total_seconds():.1f}s")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

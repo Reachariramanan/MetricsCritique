@@ -4,6 +4,10 @@
 !.env.example
 delivery/.env
 
+
+#sessions
+sessions/*
+
 # ── Environments / dependencies ─────────────────────────────────────────
 .venv/
 venv/
@@ -21,6 +25,7 @@ data/*
 !data/taxonomy_cameo.json
 !data/thresholds_cameo.json
 !data/gazetteer.json
+!data/entity_schema.json
 # data/calibration_cameo.csv holds raw post text — kept local on purpose.
 
 *.duckdb
@@ -54,3 +59,8 @@ grokplans/ClaudeChat.md
 .idea/
 .DS_Store
 *.swp
+UI/_preview_*.html
+
+# ── Rendered Claude Code session transcripts (may contain corpus text) ──
+sessions/
+*.jsonl

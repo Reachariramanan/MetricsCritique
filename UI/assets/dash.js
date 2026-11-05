@@ -68,7 +68,8 @@
 
   function topicLabel(id) {
     var t = TOPIC[id];
-    return t ? (t.label || t.topic || id) : (id == null ? '(all topics)' : id);
+    var raw = t ? (t.label || t.topic || id) : (id == null ? 'All topics' : id);
+    return /^unassigned(\s*\/\s*unassigned)?$/i.test(String(raw)) ? 'Unclassified' : raw;
   }
   function tagLabel(id) { return TAG[id] ? '#' + TAG[id].tag : (id || ''); }
 
@@ -1227,9 +1228,13 @@
     WINDAYS = ALLDAYS.filter(function (d) {
       return (!WIN.start || d >= day(WIN.start)) && (!WIN.end || d <= day(WIN.end));
     });
+    // Default view is a rolling week ending at the newest day with data (never the whole
+    // multi-month window); the "Full window" / 14d / 30d presets widen it on demand.
+    var lastDay = WINDAYS[WINDAYS.length - 1] || ALLDAYS[ALLDAYS.length - 1] || '';
+    var week = (WINDAYS.length ? WINDAYS : ALLDAYS);
     S = {
-      from: (WINDAYS[0] || ALLDAYS[0] || ''),
-      to: (WINDAYS[WINDAYS.length - 1] || ALLDAYS[ALLDAYS.length - 1] || ''),
+      from: (week[Math.max(0, week.length - 7)] || ''),
+      to: lastDay,
       platforms: {},
       topics: {},
       windowOnly: true
@@ -2966,7 +2971,7 @@
     host.appendChild(tile('Posts Monitored', fmtCompact(corpus), fmtInt(corpus) + ' posts', false,
       { view: 'posts', params: {}, title: 'Recent posts', subtitle: 'Most recent across all platforms' }));
     host.appendChild(tile('Active Alerts', fmtInt(alerts), alerts ? crit + ' need urgent review' : 'All clear', alerts > 0));
-    host.appendChild(tile('Platforms Covered', fmtInt(platforms), 'social, video &amp; forums'));
+    host.appendChild(tile('Platforms Covered', fmtInt(platforms), 'social, video & forums'));
     host.appendChild(tile('Overall Tone', toneLabel, 'across labelled posts'));
     host.appendChild(tile('Time Window', fmtInt(days.length) + ' days', days.length ? (fmtDay(days[0]) + ' – ' + fmtDay(days[days.length - 1])) : ''));
   };
@@ -3415,10 +3420,8 @@
     if (sub) {
       var w = DATA.window || {};
       var gen = (DATA.generated_at || '').slice(0, 19).replace('T', ' ');
-      sub.textContent = 'Layer-4 metrics v2 · window ' +
-        String(w.start || '').slice(0, 10) + ' → ' + String(w.end || '').slice(0, 10) +
-        ' · data snapshot ' + gen +
-        (DATA.mode ? ' · ' + DATA.mode : '');
+      sub.textContent = String(w.start || '').slice(0, 10) + ' → ' +
+        String(w.end || '').slice(0, 10) + ' · updated ' + gen.slice(0, 16) + ' UTC';
     }
     var src = document.getElementById('source-badge');
     if (src) { src.textContent = 'source: ' + (DATA.source || 'metrics.json'); }
@@ -3434,6 +3437,138 @@
     }
   }
 
+
+  // ---- Live NER panel (polls /api/gemma/status; no API on a static snapshot) ----
+  var LIVE_NER_URL = 'api/gemma/status';
+  var LIVE_NER_MS = 5000;
+  var liveNer = { timer: null, ticker: null, lastOk: null, dead: false };
+
+  function lnEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) { e.className = cls; }
+    if (text != null) { e.textContent = text; }
+    return e;
+  }
+  function lnFmt(n) { return (n == null) ? '–' : Number(n).toLocaleString('en-US'); }
+
+  function lnNote(msg) {
+    var note = document.getElementById('ln-note'), box = document.getElementById('ln-content');
+    if (!note || !box) { return; }
+    if (msg) { note.textContent = msg; note.hidden = false; box.hidden = true; }
+    else { note.hidden = true; box.hidden = false; }
+  }
+
+  function renderLiveNer(d) {
+    var root = document.getElementById('live-ner');
+    if (!root) { return; }
+    if (!d || !d.available) {
+      root.setAttribute('data-state', 'off');
+      lnNote('Live NER is not running' + (d && d.error ? ' (' + d.error + ')' : '') +
+             '. This panel updates automatically when the pipeline starts.');
+      return;
+    }
+    root.setAttribute('data-state', 'on');
+    lnNote(null);
+    var strip = document.getElementById('ln-strip');
+    strip.textContent = '';
+    var pend = d.incoming_pending || 0;
+    var stats = [
+      ['Routed', lnFmt(d.routed)], ['Posts extracted', lnFmt(d.extracted_posts)],
+      ['Entities', lnFmt(d.entities)],
+      ['OK rate', d.ok_rate == null ? '–' : (d.ok_rate * 100).toFixed(1) + '%'],
+      ['Posts / min', d.rate_per_min == null ? '–' : d.rate_per_min.toFixed(1)]
+    ];
+    stats.forEach(function (s) {
+      var c = lnEl('div', 'ln-stat'); c.appendChild(lnEl('div', 'v', s[1])); c.appendChild(lnEl('div', 'l', s[0]));
+      strip.appendChild(c);
+    });
+    var q = lnEl('div', 'ln-stat'), qv = lnEl('div', 'v', lnFmt(pend));
+    qv.appendChild(document.createTextNode(' '));
+    if (pend > 0) { qv.appendChild(lnEl('span', 'badge', 'priority')); }
+    q.appendChild(qv); q.appendChild(lnEl('div', 'l', 'New posts pending'));
+    strip.appendChild(q);
+
+    var names = d.domain_names || {}, dom = d.by_domain || {};
+    var keys = Object.keys(dom).sort(function (a, b) { return dom[b] - dom[a]; });
+    var max = keys.length ? dom[keys[0]] : 1;
+    var dbox = document.getElementById('ln-domains'); dbox.textContent = '';
+    if (!keys.length) { dbox.appendChild(lnEl('div', 'fnote', 'No routed posts yet.')); }
+    keys.forEach(function (k) {
+      var row = lnEl('div', 'ln-bar');
+      row.appendChild(lnEl('span', null, names[k] ? names[k] : (k === 'none' ? 'No domain' : k)));
+      var t = lnEl('span', 't'), i = lnEl('i'); i.style.width = (100 * dom[k] / max) + '%';
+      t.appendChild(i); row.appendChild(t); row.appendChild(lnEl('span', null, lnFmt(dom[k])));
+      if (!names[k] && k !== 'none') { console.warn('live-ner: domain without a name: ' + k); }
+      dbox.appendChild(row);
+    });
+
+    var top = document.getElementById('ln-top'); top.textContent = '';
+    (d.top_entities || []).forEach(function (e) {
+      top.appendChild(lnEl('li', null, e.name + ' · ' + e.entity_type + ' (' + e.level + ') × ' + e.n));
+    });
+    if (!(d.top_entities || []).length) { top.appendChild(lnEl('li', 'fnote', 'No entities in the last 24h.')); }
+
+    var feed = document.getElementById('ln-feed'); feed.textContent = '';
+    (d.recent || []).forEach(function (r) {
+      var li = lnEl('li', 'ln-item' + (r.source === 'new' ? ' is-new' : ''));
+      var meta = lnEl('div', 'meta');
+      if (r.source === 'new') { meta.appendChild(lnEl('span', 'badge', 'new')); }
+      var dn = function (k) { return k ? (names[k] || k) : null; };
+      var bits = [r.platform, dn(r.domain_1), dn(r.domain_2), r.event_mode,
+                  r.confidence_1 != null ? 'conf ' + Number(r.confidence_1).toFixed(2) : null, r.routed_at];
+      meta.appendChild(document.createTextNode(bits.filter(Boolean).join(' · ')));
+      li.appendChild(meta);
+      li.appendChild(lnEl('div', null, r.snippet || '(text unavailable)'));
+      (r.entities || []).forEach(function (e) { li.appendChild(lnEl('span', 'ln-ent', e.name + ' · ' + e.type)); });
+      feed.appendChild(li);
+    });
+    liveNer.lastOk = Date.now();
+    liveNerTick();
+  }
+
+  function liveNerTick() {
+    var u = document.getElementById('ln-updated');
+    if (u && liveNer.lastOk) {
+      u.textContent = 'last updated ' + Math.max(0, Math.round((Date.now() - liveNer.lastOk) / 1000)) + 's ago';
+    }
+  }
+
+  function liveNerPoll() {
+    if (liveNer.dead || !document.getElementById('live-ner')) { return Promise.resolve(); }
+    return fetch(LIVE_NER_URL, { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) { throw { status: r.status }; }
+        return r.json();
+      })
+      .then(renderLiveNer)
+      .catch(function (err) {
+        if (err && (err.status === 404 || err.status === 405)) {
+          liveNer.dead = true;
+          document.getElementById('live-ner').setAttribute('data-state', 'static');
+          lnNote('Live NER needs the API server; this static snapshot has no live endpoint.');
+        } else {
+          lnNote('Live NER endpoint unreachable; retrying.');
+        }
+      });
+  }
+
+  function initLiveNer() {
+    if (!document.getElementById('live-ner')) { return; }
+    var start = function () {
+      if (liveNer.timer) { return; }
+      liveNerPoll();
+      liveNer.timer = setInterval(function () {
+        if (document.visibilityState === 'visible') { liveNerPoll(); }
+      }, LIVE_NER_MS);
+      liveNer.ticker = setInterval(liveNerTick, 1000);
+    };
+    start();
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') { liveNerPoll(); }
+    });
+    window.__liveNerPoll = liveNerPoll;
+  }
+
   function initUI() {
     if (/[?&]selftest=1/.test(location.search)) { window.__SELFTEST__ = true; }
     if (/[?&]theme=light/.test(location.search)) {
@@ -3445,6 +3580,7 @@
     initDrillChrome();
     buildFilters();
     render();
+    initLiveNer();
     var t = null;
     window.addEventListener('resize', function () {
       if (t) { clearTimeout(t); }

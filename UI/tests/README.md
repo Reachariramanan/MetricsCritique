@@ -14,8 +14,14 @@ Run from the repo root (jsdom resolves from `./node_modules`):
     .venv/bin/python UI/tests/check_api_dimensions.py     # 9
     .venv/bin/python UI/tests/check_related_hierarchy.py  # 21
 
+    .venv/bin/python UI/tests/check_live_ner.py           # 33 (fixture duckdb; env GEMMA_NER_DB/INCOMING_DB/ANALYTICS_DB/ENTITY_SCHEMA_JSON set by the test)
+    LIVE_NER_DIR=<scratch> node UI/tests/check_live_ner.mjs  # 14 (needs a scratch build, see file header)
+
 | harness | what it pins down |
 |---|---|
+| `check_live_ner.py` | `/api/gemma/status` contract (`UI/gemma_live.py`) against temp DuckDB files built by `live_ner_fixture.py`: counts, 24h top entities, 180-char snippets, new-vs-backlog flag, pending queue, 3 s cache, and missing-file returns `available=false` with a reason (never raises). |
+| `check_live_ner.mjs` | Renders the Live NER section from canned payloads: strip, priority badge, API-supplied domain names, new highlighting, text-only snippets; `available=false` shows a calm not-running note; a 404 (static snapshot) hides content but leaves the dashboard intact. |
+| `check_live_view.mjs` | Default 7-day window; Military mode button/view; stale-corpus banner; unrouted days hatched (not zero); text rendered as text; domain chip re-queries; 404 on a static snapshot degrades calmly. Run `node UI/tests/check_live_view.mjs` (14+2 checks). |
 | `check_taxonomy.mjs` | The taxonomy ships inside `metrics.json`; every rendered label resolves through it; no raw snake_case key reaches the screen; the risk strip still shows all nine categories including the empty ones; CAMEO axes are declared and honestly marked not-yet-populated. |
 | `check_taxonomy_drop.mjs` | **Regression test for the defect the taxonomy rewrite existed to kill.** Injects a category into the data that the taxonomy does not declare, and asserts it is *rendered and warned about* rather than silently dropped — which is what the old hardcoded `RISK_ORDER.filter(...)` did. |
 | `check_dim_labels.mjs` | The `DIM_AXIS` registry covers every `dimension_type` the API can emit; each resolves through its **own** axis; drill params match `ALERT_ROUTES` (`code=` vs `category=`); and `renderRelated` emits labelled chips for a mixed-axis payload. |

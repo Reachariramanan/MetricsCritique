@@ -14,6 +14,7 @@ never opened for writing anywhere in the v2 pipeline.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -30,6 +31,15 @@ from lib.config import DATA_DIR, REPORTS_DIR
 STAGE_DIR = DATA_DIR / "metrics_stage"
 METRICS_DB = DATA_DIR / "metrics.duckdb"
 PARQUET_METRICS = DATA_DIR / "parquet_metrics"
+# Shadow build: with METRICS_SHADOW_DIR set, read the staged tables from <dir>/stage and write
+# the database, parquet mirror and results report under <dir>, leaving the live files alone.
+# The live swap is then a deliberate, separate step.
+_SHADOW = os.environ.get("METRICS_SHADOW_DIR")
+if _SHADOW:
+    _SH = Path(_SHADOW)
+    STAGE_DIR = _SH / "stage"
+    METRICS_DB = _SH / "metrics.duckdb"
+    PARQUET_METRICS = _SH / "parquet_metrics"
 
 # Tables published, in dependency order (dimensions first).
 TABLES = [
@@ -38,6 +48,46 @@ TABLES = [
     "burst_episodes", "persistence", "alert_candidates",
     "sensitivity_checks", "null_control",
 ]
+
+# Optional, additive tables (plan Step 3, event chains). 07 stages them only when
+# PARAMS["chain_method"] == "v1". Explicit DDL, never CREATE TABLE AS: an id column
+# that is NULL on every row (or a 0-row frame) would otherwise be inferred as INTEGER
+# (scripts/tests/test_id_column_types.py). Not staged -> any copy left by an earlier
+# chain run is dropped, so a published chain table never outlives the episodes it
+# was built from. The TABLES above are not affected either way.
+OPTIONAL_TABLES_DDL = {
+    "event_chain_v1": """
+        CREATE TABLE event_chain_v1 (
+            chain_id VARCHAR, episode_id VARCHAR, "order" INTEGER, link_score DOUBLE,
+            n_topics INTEGER, n_platforms INTEGER, n_authors INTEGER)""",
+    "chain_links_v1": """
+        CREATE TABLE chain_links_v1 (
+            src_episode VARCHAR, dst_episode VARCHAR, lag_days INTEGER,
+            overlap_ratio DOUBLE, shared_weight DOUBLE, shared_authors DOUBLE,
+            centroid_cos DOUBLE, topic_relation VARCHAR, route VARCHAR,
+            link_score DOUBLE, chain_id VARCHAR)""",
+}
+
+
+def publish_optional_tables(con, stage: dict) -> dict[str, int]:
+    """Create/insert the optional tables present in `stage`; drop stale ones.
+
+    Runs inside the caller's transaction. Returns {table: rows} for published ones.
+    """
+    rows: dict[str, int] = {}
+    for t, ddl in OPTIONAL_TABLES_DDL.items():
+        con.execute(f'DROP TABLE IF EXISTS "{t}";')
+        df = stage.get(t)
+        if df is None:
+            continue
+        con.execute(ddl)
+        if len(df):
+            con.register("_opt_df", df)
+            con.execute(f'INSERT INTO "{t}" BY NAME SELECT * FROM _opt_df;')
+            con.unregister("_opt_df")
+        rows[t] = con.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0]
+    return rows
+
 
 # Columns that must never appear in the metrics DB (post-level payload).
 FORBIDDEN_COLS = {"text", "text_norm", "embedding", "url", "native_id", "post_uid",
@@ -789,6 +839,9 @@ def main() -> int:
         "effort_source", "log_rate", "log_count", "surprise_q_global", "emergence_flag",
         "tone_mean", "hate_n", "read_n", "views_sum", "E_sum", "mean_confidence",
         "virality_pct_raw", "virality_n", "novelty_n", "novelty_base_n",
+        # count_mode='soft' only (07 Step 1): hard top-1 count / distinct top-1 authors
+        # kept beside the weighted V and effective n_authors. Absent in hard mode.
+        "V_primary", "n_authors_primary",
     }
     undescribed = sorted(
         c for c in stage["metrics_daily"].columns
@@ -817,6 +870,13 @@ def main() -> int:
             db_rows[t] = con.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0]
             mirror_parquet(t, df)
             log(f"  published {t:20s} rows={db_rows[t]:>7,}  -> duckdb + parquet_metrics/")
+        for t, n in publish_optional_tables(con, stage).items():
+            db_rows[t] = n
+            mirror_parquet(t, stage[t])
+            log(f"  published {t:20s} rows={n:>7,}  -> duckdb + parquet_metrics/ (optional)")
+        for t in OPTIONAL_TABLES_DDL:
+            if t not in stage and (PARQUET_METRICS / t).exists():
+                shutil.rmtree(PARQUET_METRICS / t)      # stale mirror of a dropped table
         # convenience views for the dashboard
         con.execute("""
             CREATE OR REPLACE VIEW v_metrics_live AS
@@ -833,7 +893,7 @@ def main() -> int:
         con.close()
 
     report = build_report(stage, params, db_rows)
-    out = REPORTS_DIR / "METRICS_V2_SPEC_RESULTS.md"
+    out = (Path(_SHADOW) if _SHADOW else REPORTS_DIR) / "METRICS_V2_SPEC_RESULTS.md"
     out.write_text(report)
     log(f"wrote {out}")
     log(f"metrics.duckdb = {METRICS_DB} ({METRICS_DB.stat().st_size/1e6:.1f} MB)")

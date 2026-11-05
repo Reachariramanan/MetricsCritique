@@ -246,7 +246,10 @@ def main() -> int:
     hate_scores = np.full(len(texts), np.nan, dtype=np.float32)
     hate_valid = np.zeros(len(texts), dtype=bool)
 
-    nonempty_idx = [i for i, t in enumerate(texts) if t and t.strip()]
+    # Length-sorted batching: scores are written by index so order is irrelevant,
+    # but similar-length texts per batch cut padding waste (~1.9x on this corpus).
+    nonempty_idx = sorted((i for i, t in enumerate(texts) if t and t.strip()),
+                          key=lambda i: len(texts[i][:2000]))
     print(f"scoring {len(nonempty_idx):,} non-empty texts ...")
 
     for start in range(0, len(nonempty_idx), BATCH):

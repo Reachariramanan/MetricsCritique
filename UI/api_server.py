@@ -27,6 +27,9 @@ from urllib.parse import urlparse, parse_qs
 
 import duckdb
 
+from gemma_live import gemma_status
+from live_view import live_overview, DEFAULT_MILITARY
+
 HERE = Path(__file__).resolve().parent
 EDA_ROOT = HERE.parent
 DATA = EDA_ROOT / "data"
@@ -88,8 +91,8 @@ def _has_table(name: str, _cache: dict = {}) -> bool:
 # scripts/15_topic_clustering_v4.py. Bumping this is the whole switch -- the
 # queries below read it rather than hardcoding a table name, which is what made
 # the v3 -> v4 move a one-line change instead of a grep-and-pray.
-TOPIC_DIM = "topic_dim_v4"
-TOPIC_POST = "post_topic_v4"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "lib"))
+from topic_version import TOPIC_DIM_TABLE as TOPIC_DIM, TOPIC_POST_TABLE as TOPIC_POST  # noqa: E402
 
 
 def _resolve_code(key: str) -> tuple[str, str]:
@@ -654,6 +657,22 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/health":
             self._json({"ok": True})
+            return
+        if parsed.path == "/api/gemma/status":
+            try:
+                self._json(gemma_status())
+            except Exception as e:  # never 500
+                self._json({"available": False, "error": f"{type(e).__name__}: {e}"})
+            return
+        if parsed.path == "/api/live/overview":
+            qs = parse_qs(parsed.query)
+            try:
+                days = int(qs.get("days", ["7"])[0])
+            except ValueError:
+                days = 7
+            raw = qs.get("domains", [""])[0]
+            doms = tuple(d for d in raw.split(",") if d) or DEFAULT_MILITARY
+            self._json(live_overview(days, doms))
             return
         if parsed.path == "/api/drill":
             qs = parse_qs(parsed.query)

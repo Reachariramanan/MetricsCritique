@@ -60,6 +60,9 @@ node UI/tests/check_taxonomy.mjs                                     # UI harnes
 - Platforms are derived from data (`platform_dim`), never hardcoded lists.
   `KNOWN_LOW_COVERAGE_PLATFORMS` is documentation only — don't filter on it.
 - Below minimum support, emit **NULL, not 0**, and keep the support counts alongside.
+- Experimental switches in `07` (`topic_source`, `count_mode`, `burst_method`, `chain_method`)
+  stay OFF by default; adopt one only after `scripts/review/noise_gates.py` passes and a judged
+  precision sample clears the floor (see `docs/TOPIC_KEYING_EVALUATION.md`).
 - Write metric formulas into `metric_meta` / `docs/METRICS_V2_SPEC.md`; a formula change is
   a spec change.
 - New stages that replace old outputs write new versioned tables (`_v2`, `_v3`) rather than

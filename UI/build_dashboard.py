@@ -81,6 +81,7 @@ sys.path.insert(0, str(HERE))
 # relative to its source. See scripts/lib/taxonomy.py.
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 import taxonomy as taxonomy_lib  # noqa: E402
+from topic_version import TOPIC_POST_TABLE  # noqa: E402
 
 
 def load_taxonomy(log=print) -> dict:
@@ -254,6 +255,9 @@ def _connect_ro_or_snapshot(path: Path, log, prefix: str):
     return con, tmp
 
 
+TAG_EXPORT_TOP = 150  # hashtags shipped to the browser (see load_from_duckdb)
+
+
 def load_from_duckdb(path: Path, log) -> tuple[dict, list[str]]:
     """Open read-only and pull every contract table that exists."""
     con, tmp = _connect_ro_or_snapshot(path, log, prefix="metrics-ro-")
@@ -265,7 +269,22 @@ def load_from_duckdb(path: Path, log) -> tuple[dict, list[str]]:
         for name in CONTRACT:
             if name not in present:
                 continue
-            df = con.execute(f'SELECT * FROM "{name}"').fetchdf()
+            if name == "tag_metrics_daily" and "alert_candidates" in present:
+                # The hashtag panel ranks tags, so shipping every tag-day row
+                # (~0.5M rows, ~190 MB of JSON) buys nothing. Keep the busiest
+                # tags plus any tag that raised an alert.
+                total = con.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+                cols = ", ".join(f'"{c}"' for c in CONTRACT[name])
+                df = con.execute(f'''
+                    SELECT {cols} FROM "{name}" WHERE tag_id IN (
+                        SELECT tag_id FROM "{name}" GROUP BY tag_id
+                        ORDER BY SUM(V) DESC NULLS LAST LIMIT {TAG_EXPORT_TOP})
+                    OR tag_id IN (SELECT tag_id FROM alert_candidates
+                                  WHERE tag_id IS NOT NULL)''').fetchdf()
+                log(f"  (tag_metrics_daily capped to top {TAG_EXPORT_TOP} tags "
+                    f"+ alerting tags: {len(df):,} of {total:,} rows)")
+            else:
+                df = con.execute(f'SELECT * FROM "{name}"').fetchdf()
             tables[name] = df
             found.append(name)
             log(f"  {name:22s} {len(df):8,d} rows x {len(df.columns):2d} cols")
@@ -347,7 +366,7 @@ def load_geo_tables(path: Path, log) -> tuple[dict, dict, str]:
                 "FROM entity_mentions", None),
             "risk_labels_total": scalar("SELECT count(*) FROM risk_labels"),
             "theme_labels_total": scalar("SELECT count(*) FROM theme_labels"),
-            "corpus_size": scalar("SELECT count(*) FROM post_topic_v2"),
+            "corpus_size": scalar(f"SELECT count(*) FROM {TOPIC_POST_TABLE}"),
             "posts_with_any_label": scalar(
                 "SELECT count(*) FROM (SELECT post_uid FROM risk_labels "
                 "UNION SELECT post_uid FROM theme_labels)"),
@@ -1274,6 +1293,24 @@ silently vanishing from every denominator.</div>
             f"<code>{esc(GEO_SPEC)}</code>.",
             f'<div class="card"><dl class="kv">{verdict_html}</dl></div>')
 
+    section(doc, "20", "livener", "Live NER",
+            "Gemma domain routing and entity extraction over incoming posts, polled from the "
+            "server while this tab is visible. New posts are routed first (priority), then the backlog.",
+            '''<div class="card" id="live-ner" data-state="idle">
+  <div class="ln-prov"><span class="badge gray">provisional: routing/entity accuracy not yet judged</span>
+    <span class="fnote" id="ln-updated"></span></div>
+  <div class="ln-note empty" id="ln-note" hidden></div>
+  <div id="ln-content">
+    <div class="ln-strip" id="ln-strip"></div>
+    <div class="ln-cols">
+      <div><div class="ct">Domains (by routed posts)</div><div id="ln-domains"></div></div>
+      <div><div class="ct">Top entities (24h)</div><ol class="ln-top" id="ln-top"></ol></div>
+    </div>
+    <div class="ct" style="margin-top:1rem">Recent (25 newest)</div>
+    <ul class="ln-feed" id="ln-feed"></ul>
+  </div>
+</div>''')
+
     toc = "".join(f'<a href="#{sid}">{esc(label)}</a>' for sid, label in doc.toc)
     mode_badge = ('<span class="badge">real data</span>' if mode.startswith("real")
                   else '<span class="badge crit">⚠ fixture data — not real</span>')
@@ -1350,6 +1387,7 @@ silently vanishing from every denominator.</div>
             f"<style>\n{css}\n</style>"
             f"{data_boot}"
             '<script src="assets/dash.js"></script>'
+            '<script src="assets/live.js"></script>'
         )
         # When not embedding, avoid double CSS — use external only
         return f"""<!doctype html>
@@ -1357,7 +1395,7 @@ silently vanishing from every denominator.</div>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OSINT metrics dashboard</title>
+<title>Social Signal Monitor</title>
 <link rel="stylesheet" href="assets/dash.css">
 </head>
 <body>
@@ -1376,13 +1414,14 @@ silently vanishing from every denominator.</div>
 <header class="top">
   <div class="top-in">
     <div class="brand">
-      <h1>OSINT metrics dashboard</h1>
-      <div class="sub">Layer-4 metrics v2 · window {esc(str(win.get('start'))[:10])} → {esc(str(win.get('end'))[:10])}
-        · schema contract {esc(SPEC)} §5 · snapshot {esc(generated[:19].replace('T', ' '))}</div>
+      <h1>Social Signal Monitor</h1>
+      <div class="sub">{esc(str(win.get('start'))[:10])} → {esc(str(win.get('end'))[:10])}
+        · updated {esc(generated[:16].replace('T', ' '))} UTC</div>
     </div>
     <div class="mode-toggle" role="tablist" aria-label="Dashboard mode">
       <button type="button" id="mode-basic-btn" aria-pressed="true">Overview</button>
       <button type="button" id="mode-advanced-btn" aria-pressed="false">Detailed</button>
+      <button type="button" id="mode-military-btn" aria-pressed="false">Military</button>
     </div>
     <div class="top-right">
       <span class="badge" id="mode-badge">{'real data' if mode.startswith('real') else 'fixture'}</span>
@@ -1412,6 +1451,7 @@ silently vanishing from every denominator.</div>
 </div>
 {data_boot}
 <script src="assets/dash.js"></script>
+<script src="assets/live.js"></script>
 </body>
 </html>
 """
@@ -1421,7 +1461,7 @@ silently vanishing from every denominator.</div>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OSINT metrics dashboard</title>
+<title>Social Signal Monitor</title>
 <style>
 {css}
 </style>
@@ -1442,13 +1482,14 @@ silently vanishing from every denominator.</div>
 <header class="top">
   <div class="top-in">
     <div class="brand">
-      <h1>OSINT metrics dashboard</h1>
-      <div class="sub">Layer-4 metrics v2 · window {esc(str(win.get('start'))[:10])} → {esc(str(win.get('end'))[:10])}
-        · schema contract {esc(SPEC)} §5 · built {esc(generated[:19].replace('T', ' '))}</div>
+      <h1>Social Signal Monitor</h1>
+      <div class="sub">{esc(str(win.get('start'))[:10])} → {esc(str(win.get('end'))[:10])}
+        · updated {esc(generated[:16].replace('T', ' '))} UTC</div>
     </div>
     <div class="mode-toggle" role="tablist" aria-label="Dashboard mode">
       <button type="button" id="mode-basic-btn" aria-pressed="true">Overview</button>
       <button type="button" id="mode-advanced-btn" aria-pressed="false">Detailed</button>
+      <button type="button" id="mode-military-btn" aria-pressed="false">Military</button>
     </div>
     <div class="top-right">
       {mode_badge}{partial}

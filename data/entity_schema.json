@@ -1,0 +1,1072 @@
+{
+  "schema_version": 1,
+  "source": "docs/entities/ENTITIES_EXTRACTED_Final.md (Part C)",
+  "l1": [
+    {
+      "type": "LOC_POINT",
+      "tier": "A",
+      "capture": "City, town, village, landmark of the event. Link to a place id and its parent chain.",
+      "status": "Partly covered",
+      "action": "attach to `geo_extent`, `affected_places_count`: Pipeline gives how far the effect goes and how many places, not their names or ids."
+    },
+    {
+      "type": "LOC_ADMIN",
+      "tier": "A",
+      "capture": "State, province, district of the event.",
+      "status": "Partly covered",
+      "action": "attach to `geo_extent`, `affected_places_count`: Same: size of the area only, no named state or district."
+    },
+    {
+      "type": "LOC_COUNTRY",
+      "tier": "A",
+      "capture": "Country of the event, plus origin / target countries as separate roles.",
+      "status": "Partly covered",
+      "action": "attach to `geo_extent`: `multi_country` / `national` only; no country names or origin/target roles."
+    },
+    {
+      "type": "ACT_INITIATOR",
+      "tier": "A",
+      "capture": "Who carried out the action. Link to a canonical id.",
+      "status": "New",
+      "action": "add as new entry"
+    },
+    {
+      "type": "ACT_TARGET",
+      "tier": "A",
+      "capture": "Who or what the action was done to. Link to a canonical id.",
+      "status": "Partly covered",
+      "action": "attach to `target_class`: Class of the target only (for example `energy_infrastructure`), not the named target."
+    },
+    {
+      "type": "EVT_MODE",
+      "tier": "gate",
+      "capture": "factual / future / hypothetical / negated / claimed. A threat, plan or claim never merges with a factual event.",
+      "status": "Partly covered",
+      "action": "attach to `certainty`, `article_kind`: `certainty` (asserted / alleged_or_reported / speculative) and `article_kind` = forthcoming cover most values. `negated` is not captured."
+    },
+    {
+      "type": "EVT_OUTCOME",
+      "tier": "B",
+      "capture": "Status of the event (occurred, foiled, ongoing, resolved).",
+      "status": "Partly covered",
+      "action": "attach to `trend`, `operation_stage`, `article_kind`: `trend` (resolved, contained, ...) gives the course; `operation_stage` = attempted_or_intercepted gives \"foiled\", but only in the Terror bucket."
+    },
+    {
+      "type": "EVT_DATE",
+      "tier": "A",
+      "capture": "Event date",
+      "status": "Covered",
+      "action": "already extracted (incident_date)"
+    }
+  ],
+  "l2": {
+    "D01": {
+      "name": "Conflict, Coercion & Security",
+      "bucket": "Political-Civil",
+      "types": [
+        {
+          "type": "ACT_MILITANT_ORG",
+          "tier": "A",
+          "capture": "Perpetrator group (canonical name + aliases)",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_ARMED_FORCES",
+          "tier": "A",
+          "capture": "Force or unit involved (state, branch, unit)",
+          "status": "Partly covered",
+          "action": "attach to `factions_count`: Count of groups or security actors, Political bucket only; no force or unit names."
+        },
+        {
+          "type": "EVT_CLAIM",
+          "tier": "A",
+          "capture": "Who claimed or denied responsibility, and the claim text",
+          "status": "Partly covered",
+          "action": "attach to `attribution`, `certainty`: `claimed_by_party` and `alleged_or_reported` show that a claim exists; who claimed and the claim text are not captured."
+        },
+        {
+          "type": "ACT_VICTIM_GROUP",
+          "tier": "B",
+          "capture": "Targeted community or group",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "WPN_EXPLOSIVE",
+          "tier": "B",
+          "capture": "Weapon family used",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `explosives`. Terror bucket only; system or model not captured."
+        },
+        {
+          "type": "WPN_DRONE",
+          "tier": "B",
+          "capture": "Weapon family used",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `heavy_weapons` (shared with missile, heavy, air). Terror bucket only."
+        },
+        {
+          "type": "WPN_MISSILE",
+          "tier": "B",
+          "capture": "Weapon family used",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `heavy_weapons`. Terror bucket only; D05 wants the system or model."
+        },
+        {
+          "type": "WPN_SMALLARMS",
+          "tier": "B",
+          "capture": "Weapon family used",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `firearms`. Terror bucket only."
+        },
+        {
+          "type": "WPN_HEAVY",
+          "tier": "B",
+          "capture": "Weapon family used",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `heavy_weapons`. Terror bucket only."
+        },
+        {
+          "type": "WPN_AIR",
+          "tier": "B",
+          "capture": "Weapon family used",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `heavy_weapons`. Terror bucket only."
+        },
+        {
+          "type": "WPN_NAVAL",
+          "tier": "B",
+          "capture": "Weapon family used",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "HRM_ARRESTED",
+          "tier": "B",
+          "capture": "Crowd size, number arrested",
+          "status": "Partly covered",
+          "action": "attach to `arrests`: Same count, but `arrests` exists only in the Political bucket. D06 and D09 (Terror bucket) do not get it."
+        },
+        {
+          "type": "INF_PUBLIC",
+          "tier": "B",
+          "capture": "Soft target type (market, mosque, bus stop)",
+          "status": "Partly covered",
+          "action": "attach to `target_class`: Class level via `general_public`, `public_gathering`, `religious_site`, ...; no named site."
+        },
+        {
+          "type": "EVT_METHOD",
+          "tier": "B",
+          "capture": "Tactic (ambush, shelling, raid)",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "HRM_CIVILIAN",
+          "tier": "C",
+          "capture": "Count with qualifier (exact / at least / approx) and a cumulative flag",
+          "status": "Partly covered",
+          "action": "attach to `fatalities`, `injuries`: Victim sub-group inside killed or wounded; not split out."
+        },
+        {
+          "type": "HRM_SF_CASUALTY",
+          "tier": "C",
+          "capture": "Count with qualifier (exact / at least / approx) and a cumulative flag",
+          "status": "Partly covered",
+          "action": "attach to `fatalities`, `injuries`: Security-force sub-group inside killed or wounded; not split out."
+        }
+      ],
+      "skipped": [
+        "HRM_PROTESTERS",
+        "HRM_KILLED",
+        "HRM_WOUNDED",
+        "HRM_KIDNAPPED",
+        "HRM_DAMAGE"
+      ]
+    },
+    "D02": {
+      "name": "Political, Diplomatic & Governance",
+      "bucket": "Political-Civil",
+      "types": [
+        {
+          "type": "LEG_LAW",
+          "tier": "A",
+          "capture": "Normalised instrument name, parties, date",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "LEG_POLICY",
+          "tier": "A",
+          "capture": "Normalised instrument name, parties, date",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "LEG_TREATY",
+          "tier": "A",
+          "capture": "Normalised instrument name, parties, date",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "LEG_RESOLUTION",
+          "tier": "A",
+          "capture": "Normalised instrument name, parties, date",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "LEG_SANCTION",
+          "tier": "A",
+          "capture": "Normalised instrument name, parties, date",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "EVT_ELECTION",
+          "tier": "A",
+          "capture": "Election, office, constituency",
+          "status": "Partly covered",
+          "action": "attach to `target_class`: `election_system` marks an attack on an election; the election, office and constituency are not captured."
+        },
+        {
+          "type": "NAR_FORUM",
+          "tier": "A",
+          "capture": "Summit, session, venue + date",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_GOVT",
+          "tier": "A",
+          "capture": "Speaker or decision-maker (office + country)",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_POLITICAL",
+          "tier": "B",
+          "capture": "Party, multilateral body, mediator, dispute forum",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_IGO",
+          "tier": "B",
+          "capture": "Party, multilateral body, mediator, dispute forum",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_MEDIATOR",
+          "tier": "B",
+          "capture": "Party, multilateral body, mediator, dispute forum",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_MECHANISM",
+          "tier": "B",
+          "capture": "Party, multilateral body, mediator, dispute forum",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "EVT_DEADLINE",
+          "tier": "B",
+          "capture": "Deadline or ultimatum date",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "AMT_PERCENT",
+          "tier": "C",
+          "capture": "Vote share, turnout, rate",
+          "status": "Partly covered",
+          "action": "attach to `capacity_lost_pct`, `price_change_pct`, `recovery_pct`: Only these three percentages. Vote share, turnout and rates are not captured."
+        }
+      ],
+      "skipped": []
+    },
+    "D03": {
+      "name": "Economic, Trade & Infrastructure",
+      "bucket": "Economic",
+      "types": [
+        {
+          "type": "INF_ENERGY",
+          "tier": "A",
+          "capture": "Named asset (pipeline, port, crossing, route) + its site",
+          "status": "Partly covered",
+          "action": "attach to `target_class`: Label `energy_infrastructure`; no named asset."
+        },
+        {
+          "type": "INF_TRANSPORT",
+          "tier": "A",
+          "capture": "Named asset (pipeline, port, crossing, route) + its site",
+          "status": "Partly covered",
+          "action": "attach to `target_class`: Label `transport_infrastructure`; no named asset."
+        },
+        {
+          "type": "INF_DIGITAL",
+          "tier": "A",
+          "capture": "Named asset (pipeline, port, crossing, route) + its site",
+          "status": "Partly covered",
+          "action": "attach to `target_class`: Label `telecom_or_digital`; no named asset."
+        },
+        {
+          "type": "INF_FINANCIAL",
+          "tier": "A",
+          "capture": "Named asset (pipeline, port, crossing, route) + its site",
+          "status": "Partly covered",
+          "action": "attach to `target_class`: Label `financial_system`; no named asset."
+        },
+        {
+          "type": "INF_WATER",
+          "tier": "A",
+          "capture": "Named asset (pipeline, port, crossing, route) + its site",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "INF_BORDER_CROSS",
+          "tier": "A",
+          "capture": "Named asset (pipeline, port, crossing, route) + its site",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "INF_SUPPLY_CHAIN",
+          "tier": "A",
+          "capture": "Named asset (pipeline, port, crossing, route) + its site",
+          "status": "Partly covered",
+          "action": "attach to `target_class`: Closest label is `transport_infrastructure`; no named route."
+        },
+        {
+          "type": "NAM_PROJECT",
+          "tier": "A",
+          "capture": "Project, scheme, corridor",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "AMT_TARIFF",
+          "tier": "A",
+          "capture": "Measure, goods covered, parties",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "GOOD_TRADE",
+          "tier": "A",
+          "capture": "Measure, goods covered, parties",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_CORP",
+          "tier": "A",
+          "capture": "Company in the deal or incident",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_GOVT",
+          "tier": "B",
+          "capture": "Government actor, commodity, volume",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "GOOD_ENERGY",
+          "tier": "B",
+          "capture": "Government actor, commodity, volume",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "AMT_ENERGY",
+          "tier": "B",
+          "capture": "Government actor, commodity, volume",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "AMT_WATER",
+          "tier": "B",
+          "capture": "Government actor, commodity, volume",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "INF_PUBLIC",
+          "tier": "B",
+          "capture": "Government actor, commodity, volume",
+          "status": "Partly covered",
+          "action": "attach to `target_class`: Class level via `general_public`, `public_gathering`, `religious_site`, ...; no named site."
+        },
+        {
+          "type": "AMT_MONEY",
+          "tier": "C",
+          "capture": "Deal value, price move",
+          "status": "Partly covered",
+          "action": "attach to `economic_loss`, `affected_value`, `affected_value_total`: Only loss and affected value. Deal value, ransom, pledge, cargo value are not captured."
+        },
+        {
+          "type": "AMT_PERCENT",
+          "tier": "C",
+          "capture": "Deal value, price move",
+          "status": "Partly covered",
+          "action": "attach to `capacity_lost_pct`, `price_change_pct`, `recovery_pct`: Only these three percentages. Vote share, turnout and rates are not captured."
+        }
+      ],
+      "skipped": [
+        "HRM_AFFECTED",
+        "HRM_DISPLACED"
+      ]
+    },
+    "D04": {
+      "name": "Maritime Security & Operations",
+      "bucket": "Economic",
+      "types": [
+        {
+          "type": "GOOD_VESSEL",
+          "tier": "A",
+          "capture": "Vessel name + flag, IMO or hull number, cargo",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "LOC_MARITIME",
+          "tier": "A",
+          "capture": "Sea area, strait, chokepoint, port",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "EVT_NAMED_OP",
+          "tier": "A",
+          "capture": "Named operation or exercise",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "STR_NOTICE",
+          "tier": "A",
+          "capture": "Navigational warning or advisory id",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_ARMED_FORCES",
+          "tier": "B",
+          "capture": "Navy or coast guard, flag state, naval platform, maritime border, crew held",
+          "status": "Partly covered",
+          "action": "attach to `factions_count`: Count of groups or security actors, Political bucket only; no force or unit names."
+        },
+        {
+          "type": "ACT_GOVT",
+          "tier": "B",
+          "capture": "Navy or coast guard, flag state, naval platform, maritime border, crew held",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "WPN_NAVAL",
+          "tier": "B",
+          "capture": "Navy or coast guard, flag state, naval platform, maritime border, crew held",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "LOC_BORDER",
+          "tier": "B",
+          "capture": "Navy or coast guard, flag state, naval platform, maritime border, crew held",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "EVT_DEADLINE",
+          "tier": "B",
+          "capture": "Navy or coast guard, flag state, naval platform, maritime border, crew held",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "EVT_METHOD",
+          "tier": "B",
+          "capture": "Navy or coast guard, flag state, naval platform, maritime border, crew held",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "AMT_MONEY",
+          "tier": "C",
+          "capture": "Cargo value, crew affected",
+          "status": "Partly covered",
+          "action": "attach to `economic_loss`, `affected_value`, `affected_value_total`: Only loss and affected value. Deal value, ransom, pledge, cargo value are not captured."
+        }
+      ],
+      "skipped": [
+        "HRM_KIDNAPPED",
+        "HRM_AFFECTED"
+      ]
+    },
+    "D05": {
+      "name": "Military & Defence",
+      "bucket": "Political-Civil",
+      "types": [
+        {
+          "type": "DEF_PROCUREMENT",
+          "tier": "A",
+          "capture": "Programme, contract, arms deal (parties, system)",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "EVT_NAMED_OP",
+          "tier": "A",
+          "capture": "Named exercise or operation",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "WPN_MISSILE",
+          "tier": "A",
+          "capture": "System or model",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `heavy_weapons`. Terror bucket only; D05 wants the system or model."
+        },
+        {
+          "type": "WPN_AIR",
+          "tier": "A",
+          "capture": "System or model",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `heavy_weapons`. Terror bucket only."
+        },
+        {
+          "type": "WPN_AIRDEF",
+          "tier": "A",
+          "capture": "System or model",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "WPN_DRONE",
+          "tier": "A",
+          "capture": "System or model",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `heavy_weapons` (shared with missile, heavy, air). Terror bucket only."
+        },
+        {
+          "type": "WPN_HEAVY",
+          "tier": "A",
+          "capture": "System or model",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `heavy_weapons`. Terror bucket only."
+        },
+        {
+          "type": "WPN_NAVAL",
+          "tier": "A",
+          "capture": "System or model",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "WPN_CBRN",
+          "tier": "A",
+          "capture": "System or model",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `cbrn`. Terror bucket only."
+        },
+        {
+          "type": "WPN_EW_SPACE",
+          "tier": "A",
+          "capture": "System or model",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "INF_MILITARY",
+          "tier": "A",
+          "capture": "Base, facility, test range",
+          "status": "Partly covered",
+          "action": "attach to `target_class`: Label `military`; no named base or range."
+        },
+        {
+          "type": "LEG_TREATY",
+          "tier": "A",
+          "capture": "Defence or arms-control agreement",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_ARMED_FORCES",
+          "tier": "B",
+          "capture": "Force or unit, state, escalation signal",
+          "status": "Partly covered",
+          "action": "attach to `factions_count`: Count of groups or security actors, Political bucket only; no force or unit names."
+        },
+        {
+          "type": "ACT_GOVT",
+          "tier": "B",
+          "capture": "Force or unit, state, escalation signal",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "EVT_ESCALATION",
+          "tier": "B",
+          "capture": "Force or unit, state, escalation signal",
+          "status": "Partly covered",
+          "action": "attach to `trend`: `trend` = escalating / spreading gives the direction; the signal itself is not captured."
+        },
+        {
+          "type": "AMT_DEFENCE_BUDGET",
+          "tier": "C",
+          "capture": "Budget or contract value, units deployed",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "AMT_FORCE_SIZE",
+          "tier": "C",
+          "capture": "Budget or contract value, units deployed",
+          "status": "New",
+          "action": "add as new entry"
+        }
+      ],
+      "skipped": []
+    },
+    "D06": {
+      "name": "Borders, Territory & Transboundary Resources",
+      "bucket": "Terrorism/Breach",
+      "types": [
+        {
+          "type": "LOC_BORDER",
+          "tier": "A",
+          "capture": "Border sector (LoC, IB, LAC segment)",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "LOC_THEATRE",
+          "tier": "A",
+          "capture": "Conflict or counter-terror theatre",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "LOC_WATER",
+          "tier": "A",
+          "capture": "River, basin, dam, with the riparian states",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "INF_WATER",
+          "tier": "A",
+          "capture": "River, basin, dam, with the riparian states",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "LEG_TREATY",
+          "tier": "A",
+          "capture": "Agreement or resolution name",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "LEG_RESOLUTION",
+          "tier": "A",
+          "capture": "Agreement or resolution name",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_MECHANISM",
+          "tier": "A",
+          "capture": "Joint commission or dispute forum",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_GOVT",
+          "tier": "B",
+          "capture": "State pair, affected community, border arrests, escalation signal",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_VICTIM_GROUP",
+          "tier": "B",
+          "capture": "State pair, affected community, border arrests, escalation signal",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "HRM_ARRESTED",
+          "tier": "B",
+          "capture": "State pair, affected community, border arrests, escalation signal",
+          "status": "Partly covered",
+          "action": "attach to `arrests`: Same count, but `arrests` exists only in the Political bucket. D06 and D09 (Terror bucket) do not get it."
+        },
+        {
+          "type": "EVT_ESCALATION",
+          "tier": "B",
+          "capture": "State pair, affected community, border arrests, escalation signal",
+          "status": "Partly covered",
+          "action": "attach to `trend`: `trend` = escalating / spreading gives the direction; the signal itself is not captured."
+        },
+        {
+          "type": "AMT_WATER",
+          "tier": "C",
+          "capture": "Flow, level, people affected",
+          "status": "New",
+          "action": "add as new entry"
+        }
+      ],
+      "skipped": [
+        "HRM_AFFECTED"
+      ]
+    },
+    "D07": {
+      "name": "Technology, Cyber & Hybrid Security",
+      "bucket": "Cyber",
+      "types": [
+        {
+          "type": "CYB_VULN",
+          "tier": "A",
+          "capture": "CVE id and exploitation status",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "CYB_MALWARE",
+          "tier": "A",
+          "capture": "Malware or tool name, campaign or takedown name",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "CYB_CAMPAIGN",
+          "tier": "A",
+          "capture": "Malware or tool name, campaign or takedown name",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_CYBER_ACTOR",
+          "tier": "A",
+          "capture": "Threat group (canonical name + aliases)",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "CYB_TARGET",
+          "tier": "A",
+          "capture": "Victim system, sector or organisation",
+          "status": "Partly covered",
+          "action": "attach to `target_class`: `telecom_or_digital` gives the class; the named victim is not captured."
+        },
+        {
+          "type": "ACT_CORP",
+          "tier": "A",
+          "capture": "Victim system, sector or organisation",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "CYB_IOC",
+          "tier": "A",
+          "capture": "Indicators and handles",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "SPC_SATELLITE",
+          "tier": "A",
+          "capture": "Satellite or launch object",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "CYB_VECTOR",
+          "tier": "B",
+          "capture": "Attack vector, platform, attributed state, advisory id, wallet",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "CYB_PLATFORM",
+          "tier": "B",
+          "capture": "Attack vector, platform, attributed state, advisory id, wallet",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "CYB_ATTRIBUTION",
+          "tier": "B",
+          "capture": "Attack vector, platform, attributed state, advisory id, wallet",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "STR_NOTICE",
+          "tier": "B",
+          "capture": "Attack vector, platform, attributed state, advisory id, wallet",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "AMT_CRYPTO",
+          "tier": "B",
+          "capture": "Attack vector, platform, attributed state, advisory id, wallet",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "CYB_DATA",
+          "tier": "C",
+          "capture": "Data volume, ransom or loss",
+          "status": "Partly covered",
+          "action": "attach to `exposed_count`: `exposed_count` with unit `records` gives the record count; data volume is not captured. `records_compromised` existed in fields v0 to v2."
+        },
+        {
+          "type": "AMT_MONEY",
+          "tier": "C",
+          "capture": "Data volume, ransom or loss",
+          "status": "Partly covered",
+          "action": "attach to `economic_loss`, `affected_value`, `affected_value_total`: Only loss and affected value. Deal value, ransom, pledge, cargo value are not captured."
+        }
+      ],
+      "skipped": []
+    },
+    "D08": {
+      "name": "Humanitarian & Civilian Security",
+      "bucket": "Political-Civil",
+      "types": [
+        {
+          "type": "EVT_HAZARD",
+          "tier": "A",
+          "capture": "Named storm, quake, outbreak or crisis, with id",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "LOC_DISPLACEMENT_SITE",
+          "tier": "A",
+          "capture": "Camp or displacement site",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_HUMANITARIAN",
+          "tier": "A",
+          "capture": "Agency or NGO and its response",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "NAM_PROJECT",
+          "tier": "A",
+          "capture": "Aid programme or appeal plan",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_VICTIM_GROUP",
+          "tier": "B",
+          "capture": "Affected community, damaged facility",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "INF_WATER",
+          "tier": "B",
+          "capture": "Affected community, damaged facility",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "INF_PUBLIC",
+          "tier": "B",
+          "capture": "Affected community, damaged facility",
+          "status": "Partly covered",
+          "action": "attach to `target_class`: Class level via `general_public`, `public_gathering`, `religious_site`, ...; no named site."
+        },
+        {
+          "type": "AMT_MONEY",
+          "tier": "C",
+          "capture": "Appeal or pledge amount",
+          "status": "Partly covered",
+          "action": "attach to `economic_loss`, `affected_value`, `affected_value_total`: Only loss and affected value. Deal value, ransom, pledge, cargo value are not captured."
+        },
+        {
+          "type": "HRM_CIVILIAN",
+          "tier": "C",
+          "capture": "Counts with qualifier and cumulative flag",
+          "status": "Partly covered",
+          "action": "attach to `fatalities`, `injuries`: Victim sub-group inside killed or wounded; not split out."
+        }
+      ],
+      "skipped": [
+        "HRM_KILLED",
+        "HRM_WOUNDED",
+        "HRM_DISPLACED",
+        "HRM_KIDNAPPED",
+        "HRM_AFFECTED"
+      ]
+    },
+    "D09": {
+      "name": "Terrorism, Insurgency & Internal Security",
+      "bucket": "Terrorism/Breach",
+      "types": [
+        {
+          "type": "ACT_MILITANT_ORG",
+          "tier": "A",
+          "capture": "Perpetrator group or network",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_CRIMINAL",
+          "tier": "A",
+          "capture": "Perpetrator group or network",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_INDIVIDUAL_RISK",
+          "tier": "A",
+          "capture": "Named suspect or individual of interest",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "EVT_NAMED_OP",
+          "tier": "A",
+          "capture": "Named operation",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "LEG_DESIGNATION",
+          "tier": "A",
+          "capture": "Designation or listing status",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "EVT_CLAIM",
+          "tier": "A",
+          "capture": "Claim or denial of responsibility",
+          "status": "Partly covered",
+          "action": "attach to `attribution`, `certainty`: `claimed_by_party` and `alleged_or_reported` show that a claim exists; who claimed and the claim text are not captured."
+        },
+        {
+          "type": "WPN_EXPLOSIVE",
+          "tier": "B",
+          "capture": "Weapon or seized cache",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `explosives`. Terror bucket only; system or model not captured."
+        },
+        {
+          "type": "WPN_SMUGGLED",
+          "tier": "B",
+          "capture": "Weapon or seized cache",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "WPN_SMALLARMS",
+          "tier": "B",
+          "capture": "Weapon or seized cache",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `firearms`. Terror bucket only."
+        },
+        {
+          "type": "WPN_DRONE",
+          "tier": "B",
+          "capture": "Weapon or seized cache",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `heavy_weapons` (shared with missile, heavy, air). Terror bucket only."
+        },
+        {
+          "type": "WPN_MISSILE",
+          "tier": "B",
+          "capture": "Weapon or seized cache",
+          "status": "Partly covered",
+          "action": "attach to `weapon_class`: Label `heavy_weapons`. Terror bucket only; D05 wants the system or model."
+        },
+        {
+          "type": "HRM_ARRESTED",
+          "tier": "B",
+          "capture": "Arrests, militants neutralised, forces, victims, linked cyber group",
+          "status": "Partly covered",
+          "action": "attach to `arrests`: Same count, but `arrests` exists only in the Political bucket. D06 and D09 (Terror bucket) do not get it."
+        },
+        {
+          "type": "HRM_NEUTRALISED",
+          "tier": "B",
+          "capture": "Arrests, militants neutralised, forces, victims, linked cyber group",
+          "status": "Partly covered",
+          "action": "attach to `fatalities`: Militants killed fall inside `fatalities` if the article says killed; \"neutralised\" is not separate."
+        },
+        {
+          "type": "ACT_ARMED_FORCES",
+          "tier": "B",
+          "capture": "Arrests, militants neutralised, forces, victims, linked cyber group",
+          "status": "Partly covered",
+          "action": "attach to `factions_count`: Count of groups or security actors, Political bucket only; no force or unit names."
+        },
+        {
+          "type": "ACT_VICTIM_GROUP",
+          "tier": "B",
+          "capture": "Arrests, militants neutralised, forces, victims, linked cyber group",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "ACT_CYBER_ACTOR",
+          "tier": "B",
+          "capture": "Arrests, militants neutralised, forces, victims, linked cyber group",
+          "status": "New",
+          "action": "add as new entry"
+        },
+        {
+          "type": "EVT_ESCALATION",
+          "tier": "B",
+          "capture": "Arrests, militants neutralised, forces, victims, linked cyber group",
+          "status": "Partly covered",
+          "action": "attach to `trend`: `trend` = escalating / spreading gives the direction; the signal itself is not captured."
+        },
+        {
+          "type": "HRM_CIVILIAN",
+          "tier": "C",
+          "capture": "Counts with qualifier and cumulative flag",
+          "status": "Partly covered",
+          "action": "attach to `fatalities`, `injuries`: Victim sub-group inside killed or wounded; not split out."
+        }
+      ],
+      "skipped": [
+        "HRM_KILLED",
+        "HRM_WOUNDED",
+        "HRM_KIDNAPPED"
+      ]
+    }
+  },
+  "domain_ids": [
+    "D01",
+    "D02",
+    "D03",
+    "D04",
+    "D05",
+    "D06",
+    "D07",
+    "D08",
+    "D09"
+  ]
+}
