@@ -105,10 +105,15 @@ def allowed_types(domains: list[str]) -> dict[str, dict]:
 
 def entity_system_prompt(domains: list[str]) -> str:
     types = allowed_types(domains)
-    lines = [f"- {t} [{m['level']}]: {m['capture']}" for t, m in types.items()]
+    # The list line is `- TYPE: what to capture`. It must NOT carry a `[L1]`/`[L2]` suffix next to the
+    # type: Gemma copied it into the answer (`"type": "LOC_COUNTRY [L1]"`), which the validator rejected
+    # (about 21-64% of extractions failed). The level is assigned by code from allowed_types(), not by Gemma.
+    lines = [f"- {t}: {m['capture']}" for t, m in types.items()]
     return (
         "Extract named entities from a social-media post (any language). Only use these "
         "entity types:\n" + "\n".join(lines) + "\n\n"
+        "`type` must be exactly one identifier from the start of a line above (for example LOC_COUNTRY), "
+        "with no brackets, level tags or other text.\n\n"
         "Reply with ONE JSON object and nothing else:\n"
         '{"entities": [{"type": "<TYPE>", "name": "<surface form exactly as written>", '
         '"canonical": "<normalised English name>", "role": "<short role, e.g. initiator, '
@@ -124,7 +129,18 @@ def entity_user_prompt(text: str) -> str:
     return "Post:\n" + text[:MAX_TEXT_CHARS]
 
 
+_TYPE_SUFFIX = re.compile(r"\s*[\[(][^\])]*[\])]\s*$")
+
+
+def clean_type(t):
+    """`'LOC_COUNTRY [L1]'` -> `'LOC_COUNTRY'`. Only a trailing [...] or (...) tag is removed; anything else is
+    returned unchanged so a genuinely wrong type is still rejected by the validator."""
+    return _TYPE_SUFFIX.sub("", t).strip() if isinstance(t, str) else t
+
+
 def validate_entities(obj: dict, domains: list[str]) -> Optional[str]:
+    """Returns None if acceptable, else a reason. Side effect: strips a stray `[L1]`-style tag from each
+    entity's `type` IN PLACE, so the object that gets stored carries the clean type name."""
     ents = obj.get("entities")
     if not isinstance(ents, list):
         return "entities is not a list"
@@ -132,6 +148,7 @@ def validate_entities(obj: dict, domains: list[str]) -> Optional[str]:
     for e in ents:
         if not isinstance(e, dict):
             return "entity is not an object"
+        e["type"] = clean_type(e.get("type"))
         if e.get("type") not in allowed:
             return f"type={e.get('type')!r} not allowed"
         if not str(e.get("name") or "").strip():

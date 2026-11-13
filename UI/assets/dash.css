@@ -1110,7 +1110,7 @@ button.tgl { border-radius: 999px; border-color: var(--gold-border); padding: 0.
 
 /* detailed view */
 .wrap { max-width: 1320px; }
-.filters { top: 3.6rem; background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(8px); border-bottom-color: var(--gold-border); }
+.filters { background: transparent; }
 .chip { border-radius: 999px; padding: 0.24rem 0.7rem; transition: border-color .12s, color .12s, background .12s; }
 select, input[type="date"] { border-color: var(--gold-border); background: var(--elev); border-radius: 8px; padding: 0.3rem 0.5rem; }
 .toc { display: flex; flex-wrap: wrap; gap: 0.35rem; }
@@ -1199,3 +1199,654 @@ tbody tr:hover td { background: var(--gold-wash); }
 .lv-feed .meta { font-size: 0.7rem; color: var(--ink-3); }
 .lv-feed .tx { font-size: 0.82rem; color: var(--ink); overflow-wrap: anywhere; }
 @media (max-width: 720px) { .lv-cols { grid-template-columns: 1fr; } }
+
+/* ---------------------------------------------------- global date-range bar ---- */
+/* One filter bar above both Overview and Detailed. It is a direct child of <body>, so give it
+   the same centred max-width as the page content. */
+#global-filters {
+  max-width: 1320px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1.4rem;
+  padding-right: 1.4rem;
+  box-sizing: border-box;
+}
+
+/* Platform / Topic filters only apply to the Detailed view; Overview shows the date range and scope. */
+body[data-mode="basic"] .detailed-only-filter {
+  display: none !important;
+}
+
+/* Military mode has its own live date logic (Gemma routing), so the range bar is hidden there. */
+body[data-mode="military"] #global-filters {
+  display: none;
+}
+
+/* ------------------------------------------------ metric specs dropdown ---- */
+details.specs-dropdown {
+  margin-top: 0.85rem;
+  border: 1px solid var(--gold-hair, #262e3d);
+  border-radius: 4px;
+  padding: 0.4rem 0.75rem;
+  background: var(--surface, #141922);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+details.specs-dropdown:hover {
+  border-color: var(--gold, #e3bc4b);
+}
+
+details.specs-dropdown > summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--gold, #e3bc4b);
+  padding: 0.2rem 0;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  list-style: none;
+}
+
+details.specs-dropdown > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.specs-dropdown > summary:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------- detailed single-metric toggle tabs (hidden — replaced by dash-sections) ---- */
+.toc { display: none !important; }
+
+/* =================================================== Dashboard Filters card (v14) ===== */
+/* Gap fix: kill header bottom padding and strip all margin off the filter wrapper */
+.top-in { padding-bottom: 0.25rem !important; }
+.filters {
+  position: relative;
+  z-index: 30;
+  background: transparent;
+  padding: 0 clamp(0.75rem, 2vw, 2rem) 0.4rem;
+  margin: 0;
+  border-bottom: none;
+}
+/* Overview mode: hide the full Dashboard Filters card */
+body[data-mode="basic"] #global-filters { display: none !important; }
+/* #basic-date-strip styles are at the bottom of this file (v14 BDS section) */
+.filters-in {
+  display: block;
+  max-width: 1440px;
+  margin: 0 auto;
+}
+.dash-filters-card {
+  background: var(--surface, #111a2e);
+  border: 1px solid var(--gold-border, #1e2c47);
+  border-radius: 9px;
+  padding: 0.65rem 1rem;
+  box-shadow: 0 4px 16px rgba(0,0,0,.3);
+}
+.df-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid var(--gold-border, #1e2c47);
+  padding-bottom: 0.4rem;
+}
+.df-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ink, #f1f5f9);
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+/* ── Date range: single inline row ── */
+.df-section { margin-bottom: 0.45rem; }
+.df-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink-2, #94a3b8);
+  margin-bottom: 0.3rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* presets + date pickers all on ONE flex row */
+.df-date-single-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+.df-presets {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.3rem;
+  margin-bottom: 0;
+}
+.df-preset-btn {
+  background: var(--elev, #182234);
+  border: 1px solid var(--gold-hair, #2a3b57);
+  border-radius: 6px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.78rem;
+  color: var(--ink-2, #94a3b8);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.df-preset-btn:hover { background: #1e2c44; color: #e2e8f0; border-color: #3b82f6; }
+.df-preset-btn.active {
+  background: #1d4ed8 !important;
+  border-color: #3b82f6 !important;
+  color: #fff !important;
+  font-weight: 600;
+  box-shadow: 0 0 8px rgba(37,99,235,.4);
+}
+
+.df-dates-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-left: 0.3rem;
+}
+.df-date-sep {
+  color: var(--ink-3, #64748b);
+  font-size: 0.8rem;
+  padding: 0 0.1rem;
+  flex-shrink: 0;
+}
+.df-date-input {
+  background: var(--elev, #151f30) !important;
+  border: 1px solid var(--gold-hair, #263852) !important;
+  border-radius: 6px !important;
+  padding: 0.3rem 0.6rem !important;
+  color: var(--ink, #e2e8f0) !important;
+  font-size: 0.8rem !important;
+  width: 130px;
+  flex-shrink: 0;
+}
+.df-date-arrow { color: var(--ink-3, #64748b); font-size: 0.85rem; flex-shrink: 0; }
+
+/* vertical divider between presets and date pickers */
+.df-presets-divider {
+  width: 1px;
+  height: 1.4rem;
+  background: var(--gold-border, #2a3b57);
+  flex-shrink: 0;
+  margin: 0 0.2rem;
+}
+
+.df-grid-3col {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.15fr;
+  gap: 1.1rem;
+  align-items: start;
+  margin-top: 0.65rem;
+  margin-bottom: 0.75rem;
+}
+.df-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .df-grid-3col { grid-template-columns: 1fr; gap: 0.8rem; }
+}
+.df-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.9rem;
+  margin-bottom: 0.65rem;
+}
+@media (max-width: 768px) { .df-grid-2col { grid-template-columns: 1fr; } }
+
+/* dropdown */
+.df-dropdown { position: relative; }
+.df-dropdown-trigger {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--elev, #182234);
+  border: 1px solid var(--gold-hair, #2a3b57);
+  border-radius: 7px;
+  padding: 0.42rem 0.8rem;
+  color: var(--ink, #e2e8f0);
+  font-size: 0.84rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.df-dropdown-trigger:hover { border-color: #3b82f6; background: #1e2c44; }
+.df-dropdown.open .df-dropdown-trigger { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,.25); }
+.df-dd-arrow { font-size: 0.65rem; color: var(--ink-3, #94a3b8); transition: transform .2s ease; }
+.df-dropdown.open .df-dd-arrow { transform: rotate(180deg); }
+.df-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  min-width: 260px;
+  background: var(--surface, #111a2e);
+  border: 1px solid var(--gold-border, #2a3d5e);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.6);
+  z-index: 110;
+  padding: 0.6rem;
+}
+.df-dd-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.df-dd-act-btn {
+  background: none;
+  border: none;
+  color: #38bdf8;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+}
+.df-dd-act-btn:hover { text-decoration: underline; }
+.df-dd-search-wrap { margin-bottom: 0.4rem; }
+.df-dd-search {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--elev, #182234);
+  border: 1px solid var(--gold-hair, #263852);
+  border-radius: 6px;
+  padding: 0.33rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--ink, #e2e8f0);
+}
+.df-dd-search:focus { outline: 1px solid #3b82f6; border-color: #3b82f6; }
+.df-dd-list {
+  max-height: 210px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.df-dd-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 5px;
+  font-size: 0.81rem;
+  color: var(--ink-2, #cbd5e1);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s;
+}
+.df-dd-item:hover { background: #1c2b45; color: #fff; }
+.df-dd-item input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: #2563eb;
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
+/* scope toggle */
+.df-scope-wrap {
+  display: flex;
+  flex-direction: column;
+}
+.df-scope-toggle {
+  display: flex;
+  width: 100%;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--gold-border, #1e2c47);
+  background: #090e18;
+}
+.df-scope-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 0.42rem 0.6rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--ink-2, #8fa3bf);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  text-align: center;
+}
+.df-scope-btn:hover { color: #f1f5f9; background: rgba(255,255,255,0.04); }
+.df-scope-btn.active {
+  background: #2563eb;
+  color: #fff;
+  font-weight: 600;
+}
+.df-scope-hint {
+  font-size: 0.72rem;
+  color: #64748b;
+  margin-top: 0.35rem;
+  line-height: 1.3;
+}
+
+/* footer */
+.df-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.75rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--gold-border, #1e2c47);
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+.df-summary {
+  font-size: 0.8rem;
+  color: #8fa3bf;
+  letter-spacing: 0.01em;
+}
+.df-mono-date {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #f1f5f9;
+  font-weight: 500;
+}
+.df-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.df-reset-btn {
+  background: #0d1526;
+  border: 1px solid #1e2c47;
+  border-radius: 6px;
+  color: #cbd5e1;
+  padding: 0.42rem 0.95rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.df-reset-btn:hover {
+  background: #182234;
+  border-color: #3b82f6;
+  color: #fff;
+}
+.df-apply-btn {
+  background: #101a2e;
+  color: #cbd5e1;
+  border: 1px solid #1e2c47;
+  border-radius: 6px;
+  padding: 0.42rem 1.15rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.df-apply-btn.dirty {
+  background: #2563eb;
+  border-color: #3b82f6;
+  color: #fff;
+  box-shadow: 0 0 10px rgba(37,99,235,0.4);
+}
+.df-apply-btn:hover {
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+/* =================================================== Dashboard Sections nav: Option A (Horizontal Pill Bar) ===== */
+.dash-sections-wrap {
+  padding: 0 clamp(0.75rem, 2vw, 2rem);
+  max-width: 1440px;
+  margin: 0.25rem auto 1rem;
+}
+.dash-sections-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding: 0.35rem 0.2rem 0.5rem;
+  scrollbar-width: thin;
+  scrollbar-color: #1e2c47 transparent;
+}
+.dash-sections-tabs::-webkit-scrollbar {
+  height: 4px;
+}
+.dash-sections-tabs::-webkit-scrollbar-thumb {
+  background: #1e2c47;
+  border-radius: 4px;
+}
+.dash-sec-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: #101d31;
+  border: 1px solid #1c2d46;
+  border-radius: 999px;
+  padding: 0.42rem 0.95rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.16s ease;
+  user-select: none;
+  flex-shrink: 0;
+}
+.dash-sec-pill:hover {
+  background: #152b46;
+  border-color: #3b82f6;
+  color: #fff;
+  transform: translateY(-1px);
+}
+.dash-sec-pill.active {
+  background: #2563eb;
+  border-color: #3b82f6;
+  color: #fff;
+  box-shadow: 0 0 12px rgba(37,99,235,.45);
+}
+.dash-sec-pill .dsp-icon {
+  font-size: 0.95rem;
+  opacity: 0.95;
+  display: inline-flex;
+  align-items: center;
+}
+.dash-sec-pill .dsp-title {
+  font-size: 0.82rem;
+  letter-spacing: -0.01em;
+}
+.dash-sec-all-pill {
+  background: #0d1726;
+  border-color: #243550;
+  color: #94a3b8;
+}
+.dash-sec-all-pill.active {
+  background: #2563eb;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+/* Subsections Bar (Level 2 navigation) */
+.dash-subsections-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  overflow-x: auto;
+  padding: 0.4rem 0.2rem 0.3rem;
+  margin-top: 0.4rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  scrollbar-width: thin;
+  scrollbar-color: #1e2c47 transparent;
+}
+.dash-subsections-bar::-webkit-scrollbar {
+  height: 3px;
+}
+.dash-subsections-bar::-webkit-scrollbar-thumb {
+  background: #1e2c47;
+  border-radius: 3px;
+}
+.dsub-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--muted, #64748b);
+  margin-right: 0.25rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.dash-sub-pill {
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid #1e2d46;
+  border-radius: 6px;
+  padding: 0.26rem 0.65rem;
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: #94a3b8;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  user-select: none;
+  flex-shrink: 0;
+}
+.dash-sub-pill:hover {
+  background: #1e2c44;
+  border-color: #38bdf8;
+  color: #f1f5f9;
+}
+.dash-sub-pill.active {
+  background: #0284c7;
+  border-color: #38bdf8;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 0 10px rgba(14, 165, 233, 0.4);
+}
+.dsub-select {
+  background: #0d1726;
+  border: 1px solid #1e2d46;
+  border-radius: 6px;
+  color: #cbd5e1;
+  font-size: 0.74rem;
+  padding: 0.25rem 0.6rem;
+  outline: none;
+  cursor: pointer;
+}
+.dsub-select:focus {
+  border-color: #38bdf8;
+}
+
+/* ============================================================ Basic Date Strip (v14) */
+#basic-date-strip {
+  display: none; /* toggled by body[data-mode] rules */
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0;
+  padding: 0.3rem clamp(0.75rem, 2vw, 2rem) 0.4rem;
+  background: var(--surface, #111a2e);
+  border-bottom: 1px solid var(--gold-border, #1e2c47);
+  margin-bottom: 0.5rem;
+  overflow-x: auto;
+}
+body[data-mode="basic"] #basic-date-strip { display: flex; }
+body[data-mode="advanced"] #basic-date-strip { display: none !important; }
+body[data-mode="military"] #basic-date-strip { display: none !important; }
+
+/* group: label above row */
+.bds-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0 0.75rem;
+  flex-shrink: 0;
+}
+.bds-group:first-child { padding-left: 0; }
+
+.bds-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--muted, #5a6a82);
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+/* row of items */
+.bds-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: nowrap;
+}
+
+/* preset buttons — override df-preset-btn sizing for the strip */
+#basic-date-strip .df-preset-btn {
+  padding: 0.28rem 0.65rem;
+  font-size: 0.75rem;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+/* date inputs */
+.bds-date-input {
+  background: var(--input-bg, #0d1526);
+  border: 1px solid var(--gold-border, #1e2c47);
+  border-radius: 5px;
+  color: var(--ink, #c9d8ed);
+  font-size: 0.75rem;
+  padding: 0.25rem 0.4rem;
+  width: 110px;
+  outline: none;
+  cursor: pointer;
+}
+.bds-date-input:focus { border-color: #3b82f6; }
+
+.bds-arrow {
+  color: var(--muted, #5a6a82);
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+/* vertical divider between groups */
+.bds-divider {
+  width: 1px;
+  height: 32px;
+  background: var(--gold-border, #1e2c47);
+  flex-shrink: 0;
+  align-self: center;
+}
+
+/* scope toggle in bds strip */
+.bds-scope-wrap {
+  gap: 0;
+  border: 1px solid var(--gold-border, #1e2c47);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.bds-scope-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted, #8fa3bf);
+  font-size: 0.75rem;
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.bds-scope-btn.active {
+  background: #1e3a6e;
+  color: #60a5fa;
+  font-weight: 600;
+}
+.bds-scope-btn:hover:not(.active) { background: rgba(255,255,255,0.05); color: #c9d8ed; }
+
+/* selection summary */
+.bds-summary {
+  font-size: 0.75rem;
+  color: var(--muted, #8fa3bf);
+  white-space: nowrap;
+}

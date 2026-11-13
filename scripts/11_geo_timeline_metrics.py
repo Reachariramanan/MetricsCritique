@@ -708,7 +708,7 @@ def main() -> int:
             con.execute(f'DROP TABLE IF EXISTS "{name}";')
             con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM _stage_df;')
             con.unregister("_stage_df")
-            db_rows[name] = con.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
+            db_rows[name] = con.execute(f'SELECT count(*) FROM "{name}"').fetchall()[0][0]
         con.execute("COMMIT;")
     except Exception:
         con.execute("ROLLBACK;")

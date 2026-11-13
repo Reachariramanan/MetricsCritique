@@ -8,7 +8,7 @@
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'fs';
 
-const ASSETS = '/home/hariramanan/NTRO/EDA/UI/assets';
+const ASSETS = new URL('../assets', import.meta.url).pathname.replace(/\/$/, '');
 const DIR = process.env.LIVE_NER_DIR ||
   '/tmp/claude-1004/-home-hariramanan-NTRO-EDA/d6f393bd-035c-481c-a0cc-e18adc04b014/scratchpad/ui_live';
 const html = readFileSync(`${DIR}/index.html`, 'utf8');
