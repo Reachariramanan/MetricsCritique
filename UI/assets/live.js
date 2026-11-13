@@ -238,6 +238,7 @@
     var mil = mode === 'military';
     mv.style.display = mil ? '' : 'none';
     if (mil) {
+      document.body.setAttribute('data-mode', 'military');   // hides the shared date-range bar (CSS)
       basic.style.display = 'none'; adv.style.display = 'none';
       bb.setAttribute('aria-pressed', 'false'); ab.setAttribute('aria-pressed', 'false');
       store('z-mode', 'military');

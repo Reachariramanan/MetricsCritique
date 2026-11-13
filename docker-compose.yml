@@ -1,0 +1,29 @@
+services:
+  social-media-metrices:
+    build: .
+    image: social-media-metrices:latest
+    container_name: Social-Media-Metrices
+    restart: unless-stopped
+    # Memory cap. DuckDB reads the cgroup limit and keeps itself under ~80% of it, so a heavy
+    # drill-down (e.g. the unfiltered "Recent posts" related-topics query over ~500k posts)
+    # fails with an error instead of using all host RAM and getting the process killed.
+    mem_limit: 6g
+    ports:
+      # Host port is configurable: DASHBOARD_PORT=8878 docker compose up -d
+      - "${DASHBOARD_PORT:-8877}:8877"
+    # Secrets / settings (SHAKTI_PG_*, GEMMA_*). Read at runtime, never baked into the image.
+    env_file:
+      - .env
+    # Run as your host user so files written into the mounted folders stay yours.
+    # Start with:  HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up -d
+    # (not named UID/GID: bash treats UID as a read-only variable)
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    volumes:
+      - ./data:/app/data            # DuckDB files, parquet, entity_schema.json
+      # analytics.duckdb's `post_embeddings` view reads parquet by ABSOLUTE host path. Mount the
+      # parquet at that same path so the "similar posts" panel also works inside the container.
+      # Run compose from the repo folder (PWD). Re-create the view if you move the repo.
+      - ./data/parquet:${PWD}/data/parquet:ro
+      - ./UI/data:/app/UI/data      # dashboard snapshot (metrics.json, geo_alerts.json)
+      - ./reports:/app/reports
+      - ./logs:/app/logs

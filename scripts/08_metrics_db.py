@@ -85,7 +85,7 @@ def publish_optional_tables(con, stage: dict) -> dict[str, int]:
             con.register("_opt_df", df)
             con.execute(f'INSERT INTO "{t}" BY NAME SELECT * FROM _opt_df;')
             con.unregister("_opt_df")
-        rows[t] = con.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0]
+        rows[t] = con.execute(f'SELECT count(*) FROM "{t}"').fetchall()[0][0]
     return rows
 
 
@@ -867,7 +867,7 @@ def main() -> int:
             con.execute(f'DROP TABLE IF EXISTS "{t}";')
             con.execute(f'CREATE TABLE "{t}" AS SELECT * FROM _stage_df;')
             con.unregister("_stage_df")
-            db_rows[t] = con.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0]
+            db_rows[t] = con.execute(f'SELECT count(*) FROM "{t}"').fetchall()[0][0]
             mirror_parquet(t, df)
             log(f"  published {t:20s} rows={db_rows[t]:>7,}  -> duckdb + parquet_metrics/")
         for t, n in publish_optional_tables(con, stage).items():

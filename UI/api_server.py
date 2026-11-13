@@ -205,6 +205,19 @@ def build_query(view: str, qs: dict):
         """
         return sql, params
 
+    if view == "cross_platform":
+        story_id = qs.get("story_id", [None])[0]
+        if not story_id:
+            raise ValueError("story_id required")
+        sql = f"""
+            SELECT {POST_COLS}, count(*) OVER () AS total_rows
+            FROM metrics.cross_platform_posts cp
+            JOIN analytics.post_facts p ON p.post_uid = cp.post_uid
+            WHERE cp.story_id = ?
+            ORDER BY p.posted_at ASC
+        """
+        return sql, [story_id]
+
     if view == "entity":
         entity_uid = qs.get("entity_uid", [None])[0]
         if not entity_uid:
@@ -658,6 +671,18 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/health":
             self._json({"ok": True})
             return
+        if parsed.path == "/data/metrics.json" and "gzip" in self.headers.get("Accept-Encoding", ""):
+            gz_file = HERE / "data" / "metrics.json.gz"
+            if gz_file.exists():
+                content = gz_file.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                self.wfile.write(content)
+                return
         if parsed.path == "/api/gemma/status":
             try:
                 self._json(gemma_status())
@@ -687,19 +712,14 @@ class Handler(SimpleHTTPRequestHandler):
                     cols = [c for c in rows.columns if c != "total_rows"]
                     records = rows[cols].to_dict(orient="records")
                     related = None
-                    try:
-                        # Deterministic seed: 31% of posts share a posted_at with
-                        # another post and most views order by it with no
-                        # tiebreaker, so records[0] alone was unstable run to run.
-                        seed = min((r["post_uid"] for r in records), default=None) if records else None
-                        related = compute_related(cur, view, qs, seed)
-                    except Exception as e:
-                        # Never break the main rows response -- but do not fail
-                        # silently either: a permanently broken related query
-                        # used to be indistinguishable from "no related items".
-                        related = None
-                        print(f"WARN: compute_related failed for view={view!r} qs={dict(qs)!r}: "
-                              f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
+                    if view != "cross_platform":
+                        try:
+                            seed = min((r["post_uid"] for r in records), default=None) if records else None
+                            related = compute_related(cur, view, qs, seed)
+                        except Exception as e:
+                            related = None
+                            print(f"WARN: compute_related failed for view={view!r} qs={dict(qs)!r}: "
+                                  f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
                 finally:
                     cur.close()
                 resp = {"view": view, "shown": len(records), "total": total, "rows": records}

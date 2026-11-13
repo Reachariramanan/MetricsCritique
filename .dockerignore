@@ -1,0 +1,30 @@
+# VCS / local environments
+.git
+.gitignore
+.venv
+venv
+node_modules
+__pycache__
+*.pyc
+.pytest_cache
+.ipynb_checkpoints
+
+# Secrets — passed at runtime via env_file, never copied into the image
+.env
+.env.*
+!.env.example
+
+# Corpus-derived data: large and private. Mounted as volumes instead.
+# (Small hand-authored configs in data/*.json stay in the image as defaults.)
+data/*.duckdb
+data/*.duckdb.wal
+data/parquet
+data/parquet_metrics
+data/metrics_stage
+data/shadow_metrics
+UI/data
+reports/figures
+logs
+sessions
+*.log
+*.jsonl

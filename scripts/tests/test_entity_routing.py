@@ -63,6 +63,21 @@ def test_validate_entities():
     assert R.validate_entities({"entities": "x"}, [])
 
 
+def test_level_suffix_is_stripped_and_not_in_prompt():
+    # Regression: the prompt used to print `- LOC_COUNTRY [L1]: ...`; Gemma copied the tag into `type`
+    # and ~21-64% of extractions were rejected as `type='LOC_COUNTRY [L1]' not allowed`.
+    assert R.clean_type("LOC_COUNTRY [L1]") == "LOC_COUNTRY"
+    assert R.clean_type("LOC_POINT (L2)") == "LOC_POINT"
+    assert R.clean_type("LOC_POINT") == "LOC_POINT" and R.clean_type(None) is None
+    obj = {"entities": [{"type": "LOC_COUNTRY [L1]", "name": "Ukraine", "confidence": 0.9}]}
+    assert R.validate_entities(obj, []) is None
+    assert obj["entities"][0]["type"] == "LOC_COUNTRY"            # stored value is the clean name
+    # a genuinely unknown type is still rejected, even with a tag
+    assert R.validate_entities({"entities": [{"type": "NOPE [L1]", "name": "x"}]}, [])
+    prompt = R.entity_system_prompt(["D01"])
+    assert "[L1]" not in prompt and "[L2]" not in prompt and "- LOC_COUNTRY:" in prompt
+
+
 def test_evidence_and_keys():
     text = "Президент  Путин  заявил о ПЕРЕМИРИИ в Киеве."
     assert R.evidence_in_text("путин заявил", text)

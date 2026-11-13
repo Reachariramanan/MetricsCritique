@@ -58,7 +58,7 @@ KNOWN_LOW_COVERAGE_PLATFORMS = frozenset({"snapchat", "pinterest", "whatsapp"})
 TS_EXCLUDE_PLATFORMS = frozenset()
 
 # Platforms with no usable engagement fields
-NO_ENGAGEMENT_PLATFORMS = frozenset({"reddit"})
+NO_ENGAGEMENT_PLATFORMS = frozenset({"reddit", "whatsapp"})  # add "discord", "chirpwire" when those extractors are enabled
 
 # Embedding model used in production (must match for clustering)
 EMBEDDING_MODEL = "BAAI/bge-m3"

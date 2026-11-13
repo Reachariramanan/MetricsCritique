@@ -3,7 +3,7 @@
    silently. Inject one and assert it now renders AND warns. */
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'fs';
-const ROOT = '/home/hariramanan/NTRO/EDA/UI';
+const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');   // UI/ folder, wherever the repo lives
 const html = readFileSync(`${ROOT}/index.html`, 'utf8');
 const metrics = JSON.parse(readFileSync(`${ROOT}/data/metrics.json`, 'utf8'));
 

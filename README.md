@@ -1,7 +1,8 @@
 # MetricsCritique — ShaktiDB Social OSINT Metrics Pipeline
 
 A read-only analytics pipeline that turns the live **`shaktidb_social`** Postgres corpus
-(scraped Telegram, LinkedIn, YouTube, Reddit, Facebook, Instagram, Snapchat and Pinterest
+(scraped Telegram, Twitter/X, TikTok, Truth Social, Mastodon, WhatsApp, LinkedIn, YouTube,
+Reddit, Facebook, Facebook Profiles, Instagram, Snapchat, Pinterest, Baidu Tieba and Baidu Video
 posts) into **statistically gated OSINT signal metrics**, a **geopolitical ontology**
 (topics, entities, risk/theme labels, CAMEO event codes), FDR-gated **alerts**, and an
 **interactive dashboard** with click-to-inspect drill-down.

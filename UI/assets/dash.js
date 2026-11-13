@@ -583,6 +583,7 @@
   function tableView(host, cols, rows, opts) {
     opts = opts || {};
     var d = h('details', { class: 'tv' });
+    if (opts.open) { d.open = true; }
     d.appendChild(h('summary', { text: opts.label || ('Table view — ' + rows.length + ' rows') }));
     if (!rows.length) {
       d.appendChild(h('div', { class: 'empty', text: 'No rows in the current selection.' }));
@@ -1222,7 +1223,6 @@
     var s = {};
     T('metrics_daily').forEach(function (r) { s[day(r.day)] = 1; });
     T('metrics_topic_day').forEach(function (r) { s[day(r.day)] = 1; });
-    T('tag_metrics_daily').forEach(function (r) { s[day(r.day)] = 1; });
     ALLDAYS = Object.keys(s).sort();
     WIN = (DATA && DATA.window) || {};
     WINDAYS = ALLDAYS.filter(function (d) {
@@ -1243,7 +1243,6 @@
     TOPIC_IDS.forEach(function (t) { S.topics[t] = true; });
 
     var gd = {};
-    T('entity_metrics_daily').forEach(function (r) { gd[day(r.day)] = 1; });
     T('risk_metrics_daily').forEach(function (r) { gd[day(r.day)] = 1; });
     T('theme_metrics_daily').forEach(function (r) { gd[day(r.day)] = 1; });
     GEODAYS = Object.keys(gd).sort();
@@ -1266,9 +1265,14 @@
     F.mtd = T('metrics_topic_day').filter(function (r) {
       return dayOk(r.day) && S.topics[r.topic_id] && (!S.windowOnly || r.in_window);
     });
-    F.tags = T('tag_metrics_daily').filter(function (r) {
-      return dayOk(r.day) && S.platforms[r.platform];
-    });
+    var mode = (document.body && document.body.getAttribute('data-mode')) || 'basic';
+    if (mode === 'advanced') {
+      F.tags = T('tag_metrics_daily').filter(function (r) {
+        return dayOk(r.day) && S.platforms[r.platform];
+      });
+    } else {
+      F.tags = [];
+    }
     F.alerts = T('alert_candidates').filter(function (r) {
       return dayOk(r.day) && (r.platform == null || S.platforms[r.platform]) &&
         (r.topic_id == null || S.topics[r.topic_id]);
@@ -1312,7 +1316,7 @@
     var crit = F.alerts.filter(function (a) { return a.severity === 'critical'; }).length;
     var top = null;
     md.forEach(function (r) {
-      if (isNum(r.emergence_score) && (!top || r.emergence_score > top.emergence_score)) { top = r; }
+      if (r.topic_id !== 'unassigned' && isNum(r.emergence_score) && (!top || r.emergence_score > top.emergence_score)) { top = r; }
     });
     var dr = F.days.length;
 
@@ -1427,7 +1431,7 @@
 
   /* ---- 3. Acceleration & emergence ---- */
   P.emg_components = function (host) {
-    var cand = F.md.filter(function (r) { return isNum(r.emergence_score); });
+    var cand = F.md.filter(function (r) { return r.topic_id !== 'unassigned' && isNum(r.emergence_score); });
     if (!cand.length) { empty(host, 'No cell has an emergence score in this slice — every candidate failed the support gate or had fewer than 2 of the 4 components.'); return; }
     cand.sort(function (a, b) { return b.emergence_score - a.emergence_score; });
     var top = cand.slice(0, 8);
@@ -2054,6 +2058,69 @@
     hBars(host, { items: items, width: host.clientWidth || 700, measure: metaName('reach_proxy'),
       vFmt: fmtCompact, xFmt: fmtCompact, labelW: 110,
       tipNote: 'PROXY. No follower or subscriber counts exist anywhere in the corpus.' });
+  };
+
+  /* ---- 10c. Cross-Platform Narrative Diffusion ---- */
+  P.cross_platform = function (host) {
+    var stories = T('cross_platform_stories');
+    if (!stories || !stories.length) {
+      empty(host, 'No cross-platform narrative clusters detected in the current dataset.');
+      return;
+    }
+
+    var filtered = stories.filter(function (s) {
+      if (!s.platforms) { return false; }
+      var plist = Array.isArray(s.platforms) ? s.platforms : [s.platforms];
+      return plist.some(function (p) { return S.platforms[p]; });
+    });
+
+    if (!filtered.length) {
+      empty(host, 'No cross-platform narratives in this platform selection.');
+      return;
+    }
+
+    var tableRows = filtered.slice(0, 35).map(function (s) {
+      var plist = Array.isArray(s.platforms) ? s.platforms : [s.platforms];
+      var dests = plist.filter(function (p) { return p !== s.origin_platform; });
+      var bMult = s.breadth_multiplier || (1.0 + 0.5 * (s.n_platforms - 1));
+      var uReach = s.unified_reach != null ? s.unified_reach : (s.total_views || 0);
+      var effReach = s.effective_reach != null ? s.effective_reach : (uReach * bMult);
+      return {
+        story_id: s.story_id,
+        origin: s.origin_platform,
+        destinations: dests.length ? dests.join(', ') : plist.join(', '),
+        breadth: s.n_platforms,
+        breadth_multiplier: bMult,
+        posts: s.n_posts,
+        unified_reach: uReach,
+        effective_reach: effReach,
+        lag: (s.spread_duration_hours != null ? s.spread_duration_hours + 'h' : '—'),
+        snippet: s.snippet,
+        first_seen: s.origin_time ? s.origin_time.split(' ')[0] : '—'
+      };
+    });
+
+    tableView(host, [
+      { k: 'origin', label: 'Origin Platform', strong: true },
+      { k: 'destinations', label: 'Diffusion Network' },
+      { k: 'breadth', label: 'Breadth', num: true, fmt: function (v) { return v + ' platforms'; } },
+      { k: 'posts', label: 'Total Posts', num: true, fmt: fmtInt },
+      { k: 'unified_reach', label: 'Unified Story Reach', num: true, fmt: fmtCompact },
+      { k: 'effective_reach', label: 'Effective Reach', num: true, fmt: function (v, r) { return fmtCompact(v) + ' (' + (r.breadth_multiplier ? r.breadth_multiplier + 'x' : '1.0x') + ')'; } },
+      { k: 'lag', label: 'Spread Lag' },
+      { k: 'first_seen', label: 'First Seen' },
+      { k: 'snippet', label: 'Narrative Message Sample', wrap: true }
+    ], tableRows, {
+      open: true,
+      label: 'Top Multi-Platform Narratives & Improvised Reach (' + tableRows.length + ' stories) — click any story to inspect all posts across platforms',
+      rowDrill: function (r) {
+        return {
+          view: 'cross_platform',
+          params: { story_id: r.story_id },
+          title: 'Narrative Spread: ' + r.origin + ' → ' + r.destinations + ' (' + r.posts + ' posts · ' + fmtCompact(r.unified_reach) + ' reach)'
+        };
+      }
+    });
   };
 
   /* ---- 11. Authors & coordination ---- */
@@ -2931,10 +2998,11 @@
      view, just summarised and named for a reader seeing this for the first time. */
 
   P.basic_updated = function (host) {
-    var w = DATA.window || {};
-    var end = String(w.end || '').slice(0, 10);
+    var from = S.from ? fmtDay(S.from) : '';
+    var to = S.to ? fmtDay(S.to) : '';
+    var rangeStr = (from && to) ? (from + ' – ' + to) : (DATA.window ? fmtDay(DATA.window.start) + ' – ' + fmtDay(DATA.window.end) : '');
     var gen = (DATA.generated_at || '').slice(0, 10);
-    host.appendChild(h('span', { text: 'Showing activity through ' + (end ? fmtDayFull(end) : 'latest data') +
+    host.appendChild(h('span', { text: 'Showing activity: ' + rangeStr +
       (gen ? ' · snapshot taken ' + gen : '') }));
     if (BASIC.attentionOnly) {
       var ak = attentionKeys();
@@ -2948,16 +3016,22 @@
   };
 
   P.basic_kpis = function (host) {
-    var md = T('metrics_daily');
+    var md = (F.md && F.md.length) ? F.md : (F.days && F.days.length ? F.md : T('metrics_daily'));
     var corpus = 0; md.forEach(function (r) { corpus += (r.V || 0); });
-    var alerts = T('geo_alert_candidates').length + T('alert_candidates').length;
-    var crit = T('geo_alert_candidates').filter(function (a) { return a.severity === 'critical'; }).length +
-      T('alert_candidates').filter(function (a) { return a.severity === 'critical'; }).length;
-    var platforms = T('platform_dim').length;
+    var fromD = S.from, toD = S.to;
+    var inRange = function (r) { var d = day(r.day || r.date || ''); return (!fromD || d >= fromD) && (!toD || d <= toD); };
+    var geoAlerts = T('geo_alert_candidates').filter(inRange);
+    var topicAlerts = (F.alerts !== undefined) ? F.alerts : T('alert_candidates').filter(inRange);
+    var alerts = geoAlerts.length + topicAlerts.length;
+    var crit = geoAlerts.filter(function (a) { return a.severity === 'critical'; }).length +
+      topicAlerts.filter(function (a) { return a.severity === 'critical'; }).length;
+    var activePlats = {};
+    md.forEach(function (r) { if ((r.V || 0) > 0) activePlats[r.platform] = true; });
+    var platforms = Object.keys(activePlats).length || selPlatforms().length || T('platform_dim').length;
     var toneVals = md.filter(function (r) { return isNum(r.tone_eb); }).map(function (r) { return r.tone_eb; });
     var toneAvg = toneVals.length ? toneVals.reduce(function (a, b) { return a + b; }, 0) / toneVals.length : null;
     var toneLabel = toneAvg == null ? 'No data' : (toneAvg > 0.05 ? 'Positive' : (toneAvg < -0.05 ? 'Negative' : 'Neutral'));
-    var days = WINDAYS.length ? WINDAYS : ALLDAYS;
+    var days = F.days && F.days.length ? F.days : (WINDAYS.length ? WINDAYS : ALLDAYS);
 
     function tile(label, val, sub, warn, drill) {
       var t = h('div', { class: 'kpi-tile' + (warn ? ' warn' : '') }, [
@@ -2969,7 +3043,7 @@
       return t;
     }
     host.appendChild(tile('Posts Monitored', fmtCompact(corpus), fmtInt(corpus) + ' posts', false,
-      { view: 'posts', params: {}, title: 'Recent posts', subtitle: 'Most recent across all platforms' }));
+      { view: 'posts', params: {}, title: 'Recent posts', subtitle: 'Filtered posts in selected window' }));
     host.appendChild(tile('Active Alerts', fmtInt(alerts), alerts ? crit + ' need urgent review' : 'All clear', alerts > 0));
     host.appendChild(tile('Platforms Covered', fmtInt(platforms), 'social, video & forums'));
     host.appendChild(tile('Overall Tone', toneLabel, 'across labelled posts'));
@@ -2977,9 +3051,13 @@
   };
 
   P.basic_attention = function (host) {
-    var alerts = T('geo_alert_candidates').map(function (a) {
+    var fromD = S.from, toD = S.to;
+    var inRange = function (d) { var x = day(d); return (!fromD || x >= fromD) && (!toD || x <= toD); };
+    var geoAlerts = T('geo_alert_candidates').filter(function (a) { return inRange(a.day); });
+    var topicAlerts = (F.alerts !== undefined) ? F.alerts : T('alert_candidates').filter(function (a) { return inRange(a.day); });
+    var alerts = geoAlerts.map(function (a) {
       return { day: a.day, severity: a.severity, dimType: a.dimension_type, key: a.dimension_key, q: a.q_value, rationale: a.rationale };
-    }).concat(T('alert_candidates').map(function (a) {
+    }).concat(topicAlerts.map(function (a) {
       return { day: a.day, severity: a.severity, dimType: 'topic', key: a.topic_id, q: a.surprise_q, rationale: null };
     }));
     if (!alerts.length) {
@@ -2987,7 +3065,7 @@
         h('div', { class: 'attn-icon', text: '✓' }),
         h('div', {}, [
           h('div', { class: 'attn-hd', text: 'Status' }),
-          h('div', { class: 'attn-body', text: 'Nothing unusual detected right now — all tracked signals are within their normal range.' })
+          h('div', { class: 'attn-body', text: 'Nothing unusual detected in the selected window — all tracked signals are within normal range.' })
         ])
       ]));
       return;
@@ -3007,7 +3085,7 @@
     var body = h('div');
     body.appendChild(h('div', { class: 'attn-hd', text: 'Needs attention' }));
     body.appendChild(h('div', { class: 'attn-body' }, [txt('Unusual activity in '), h('b', { text: name }), txt(' on ' + fmtDayFull(top.day) + '.')]));
-    body.appendChild(h('div', { class: 'attn-note', text: alerts.length + ' alert' + (alerts.length === 1 ? '' : 's') + ' flagged in total.' + (top.rationale ? ' ' + top.rationale : '') }));
+    body.appendChild(h('div', { class: 'attn-note', text: alerts.length + ' alert' + (alerts.length === 1 ? '' : 's') + ' flagged in the selected window.' + (top.rationale ? ' ' + top.rationale : '') }));
     box.appendChild(body);
 
     /* Clicking this FILTERS the Overview to the flagged items rather than
@@ -3029,15 +3107,17 @@
   };
 
   P.basic_risk_strip = function (host) {
-    var rows = T('risk_metrics_daily');
+    var fromD = S.from, toD = S.to;
+    var inRange = function (r) { var x = day(r.day); return (!fromD || x >= fromD) && (!toD || x <= toD); };
+    var rows = T('risk_metrics_daily').filter(inRange);
     var alertSet = {};
-    T('geo_alert_candidates').forEach(function (a) { if (a.dimension_type === 'risk') { alertSet[a.dimension_key] = true; } });
+    T('geo_alert_candidates').filter(function (a) { return a.dimension_type === 'risk' && inRange(a.day); }).forEach(function (a) { alertSet[a.dimension_key] = true; });
     var byCat = {};
     rows.forEach(function (r) { (byCat[r.risk_category] = byCat[r.risk_category] || []).push(r); });
     var strip = h('div', { class: 'status-strip' });
     host.appendChild(strip);
     var order = TAX.orderAll('risk', byCat).filter(function (k) { return !BASIC.attentionOnly || alertSet[k]; });
-    if (!order.length) { empty(host, 'No risk category is currently flagged.'); return; }
+    if (!order.length) { empty(host, 'No risk category is currently flagged in this window.'); return; }
     order.forEach(function (k) {
       var crows = byCat[k] || [];
       var hasData = crows.some(function (r) { return (r.V || 0) > 0; });
@@ -3055,7 +3135,9 @@
   };
 
   P.basic_theme_bars = function (host) {
-    var rows = T('theme_metrics_daily');
+    var fromD = S.from, toD = S.to;
+    var inRange = function (r) { var x = day(r.day); return (!fromD || x >= fromD) && (!toD || x <= toD); };
+    var rows = T('theme_metrics_daily').filter(inRange);
     var totals = {};
     rows.forEach(function (r) { totals[r.theme_category] = (totals[r.theme_category] || 0) + (r.V || 0); });
     var flaggedThemes = attentionKeys().theme;
@@ -3066,7 +3148,7 @@
       .sort(function (a, b) { return b.value - a.value; });
     if (!items.length) {
       empty(host, BASIC.attentionOnly ? 'No theme is currently flagged.'
-        : 'No theme-labelled posts in the current window yet.');
+        : 'No theme-labelled posts in the selected window.');
       return;
     }
     hBars(host, { items: items, width: host.clientWidth || 360, measure: 'posts',
@@ -3074,19 +3156,19 @@
   };
 
   P.basic_volume_trend = function (host) {
-    var md = T('metrics_daily');
+    var md = (F.md && F.md.length) ? F.md : (F.days && F.days.length ? F.md : T('metrics_daily'));
     var byDay = {};
     md.forEach(function (r) { var d = day(r.day); byDay[d] = (byDay[d] || 0) + (r.V || 0); });
-    var days = WINDAYS.length ? WINDAYS : ALLDAYS;
+    var days = F.days && F.days.length ? F.days : (WINDAYS.length ? WINDAYS : ALLDAYS);
     if (!days.length) { empty(host, 'No time window available.'); return; }
     var pts = days.map(function (d, i) { return { i: i, v: byDay[d] || 0 }; });
     lineChart(host, {
       days: days, series: [{ label: 'Posts per day', role: 'focal', kind: 'area', pts: pts }],
       width: host.clientWidth || 360, height: 140, zeroBase: true,
-      yFmt: fmtCompact, tipFmt: fmtInt, tipHead: 'Posts per day', yTicks: 3, xTicks: 4,
+      yFmt: fmtCompact, tipFmt: fmtInt, tipHead: 'Posts per day', yTicks: 3, xTicks: Math.min(4, days.length),
       margin: { t: 8, r: 10, b: 22, l: 36 }
     });
-    attachDrill(host, { view: 'posts', params: {}, title: 'Recent posts', subtitle: 'Across all platforms in the current window' });
+    attachDrill(host, { view: 'posts', params: {}, title: 'Recent posts', subtitle: 'Across all platforms in the selected window' });
   };
 
   P.basic_top_entities = function (host) {
@@ -3199,11 +3281,13 @@
     if (!basicBtn || !advBtn || !basicView || !advView) { return; }
     function setMode(mode) {
       var isBasic = mode !== 'advanced';
+      document.body.setAttribute('data-mode', isBasic ? 'basic' : 'advanced');
       basicView.style.display = isBasic ? '' : 'none';
       advView.style.display = isBasic ? 'none' : '';
       basicBtn.setAttribute('aria-pressed', isBasic ? 'true' : 'false');
       advBtn.setAttribute('aria-pressed', isBasic ? 'false' : 'true');
       try { localStorage.setItem('z-mode', isBasic ? 'basic' : 'advanced'); } catch (e) { /* file:// */ }
+      render();
     }
     var stored = null;
     try { stored = localStorage.getItem('z-mode'); } catch (e) { stored = null; }
@@ -3213,85 +3297,356 @@
     if (link) { link.addEventListener('click', function (e) { e.preventDefault(); setMode('advanced'); }); }
   }
 
-  /* =============================================================== filters */
+  /* =============================================================== filters (v11 — Dashboard Filters card) */
+
+  /* --- helpers for the new filter card --- */
+  var _pendingS = {};   // staging state used by Apply button
+
+  function _makeDropdown(triggerLabel, keys, store, labeller, onApply) {
+    var wrap = document.createElement('div');
+    wrap.className = 'df-dropdown';
+
+    var trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'df-dropdown-trigger';
+
+    var trigText = document.createElement('span');
+    var arrow = document.createElement('span');
+    arrow.className = 'df-dd-arrow';
+    arrow.textContent = '▼';
+    trigger.appendChild(trigText);
+    trigger.appendChild(arrow);
+
+    var menu = document.createElement('div');
+    menu.className = 'df-dropdown-menu';
+    menu.style.display = 'none';
+
+    // actions row: Select All / Clear
+    var actRow = document.createElement('div');
+    actRow.className = 'df-dd-actions';
+    var selAllBtn = document.createElement('button');
+    selAllBtn.className = 'df-dd-act-btn'; selAllBtn.type = 'button'; selAllBtn.textContent = 'Select all';
+    var clearBtn = document.createElement('button');
+    clearBtn.className = 'df-dd-act-btn'; clearBtn.type = 'button'; clearBtn.textContent = 'Clear';
+    actRow.appendChild(selAllBtn); actRow.appendChild(clearBtn);
+    menu.appendChild(actRow);
+
+    // search
+    var searchWrap = document.createElement('div');
+    searchWrap.className = 'df-dd-search-wrap';
+    var searchInput = document.createElement('input');
+    searchInput.type = 'text'; searchInput.className = 'df-dd-search';
+    searchInput.placeholder = 'Search…';
+    searchWrap.appendChild(searchInput);
+    menu.appendChild(searchWrap);
+
+    // list
+    var list = document.createElement('div');
+    list.className = 'df-dd-list';
+    menu.appendChild(list);
+    wrap.appendChild(trigger); wrap.appendChild(menu);
+
+    function getLabel(k) { return labeller ? labeller(k) : k; }
+
+    function refreshList(filter) {
+      list.textContent = '';
+      keys.forEach(function (k) {
+        var lbl = getLabel(k);
+        if (filter && lbl.toLowerCase().indexOf(filter.toLowerCase()) === -1) { return; }
+        var item = document.createElement('label');
+        item.className = 'df-dd-item';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.checked = !!store[k];
+        cb.addEventListener('change', function () {
+          store[k] = cb.checked;
+          if (!keys.some(function (x) { return store[x]; })) { store[k] = true; cb.checked = true; }
+          refreshTriggerLabel(); onApply();
+        });
+        var txt = document.createElement('span'); txt.textContent = lbl;
+        item.appendChild(cb); item.appendChild(txt);
+        list.appendChild(item);
+      });
+    }
+
+    function refreshTriggerLabel() {
+      var sel = keys.filter(function (k) { return store[k]; });
+      if (sel.length === keys.length) { trigText.textContent = triggerLabel + ' (' + keys.length + ')'; }
+      else if (sel.length <= 3) { trigText.textContent = sel.map(getLabel).join(', '); }
+      else { trigText.textContent = sel.length + ' selected'; }
+    }
+
+    selAllBtn.addEventListener('click', function () {
+      keys.forEach(function (k) { store[k] = true; });
+      refreshList(searchInput.value); refreshTriggerLabel(); onApply();
+    });
+    clearBtn.addEventListener('click', function () {
+      var first = keys[0];
+      keys.forEach(function (k) { store[k] = false; });
+      if (first) { store[first] = true; }
+      refreshList(searchInput.value); refreshTriggerLabel(); onApply();
+    });
+    searchInput.addEventListener('input', function () { refreshList(searchInput.value); });
+
+    trigger.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var open = wrap.classList.toggle('open');
+      menu.style.display = open ? 'block' : 'none';
+      if (open) { refreshList(''); }
+    });
+    document.addEventListener('click', function () {
+      wrap.classList.remove('open'); menu.style.display = 'none';
+    });
+    menu.addEventListener('click', function (e) { e.stopPropagation(); });
+
+    refreshTriggerLabel();
+    wrap._refresh = function () { refreshTriggerLabel(); };
+    return wrap;
+  }
 
   function buildFilters() {
     var host = document.getElementById('filters-in');
     if (!host) { return; }
     host.textContent = '';
 
-    var g1 = h('div', { class: 'fgroup' }, [h('span', { class: 'lbl', text: 'Date range' })]);
-    var r1 = h('div', { class: 'row' });
+    var card = document.createElement('div');
+    card.className = 'dash-filters-card';
+
+    /* --- header --- */
+    var hdr = document.createElement('div'); hdr.className = 'df-header';
+    var title = document.createElement('h2'); title.className = 'df-title'; title.textContent = 'Dashboard Filters';
+    hdr.appendChild(title);
+    card.appendChild(hdr);
+
+    /* --- date range (single line presets + date inputs) --- */
+    var dateSection = document.createElement('div'); dateSection.className = 'df-section';
+    var dateLbl = document.createElement('div'); dateLbl.className = 'df-label'; dateLbl.textContent = 'DATE RANGE';
+    dateSection.appendChild(dateLbl);
+
+    var dateLine = document.createElement('div'); dateLine.className = 'df-date-single-line';
+    var presetsRow = document.createElement('div'); presetsRow.className = 'df-presets';
     var presets = [
       { l: 'Full window', f: function () { S.from = WINDAYS[0] || ALLDAYS[0]; S.to = WINDAYS[WINDAYS.length - 1] || ALLDAYS[ALLDAYS.length - 1]; S.windowOnly = true; } },
-      { l: 'Last 7d', f: function () { S.to = WINDAYS[WINDAYS.length - 1]; S.from = WINDAYS[Math.max(0, WINDAYS.length - 7)]; S.windowOnly = true; } },
-      { l: 'Last 14d', f: function () { S.to = WINDAYS[WINDAYS.length - 1]; S.from = WINDAYS[Math.max(0, WINDAYS.length - 14)]; S.windowOnly = true; } },
-      { l: 'Last 30d', f: function () { S.to = WINDAYS[WINDAYS.length - 1]; S.from = WINDAYS[Math.max(0, WINDAYS.length - 30)]; S.windowOnly = true; } },
-      { l: 'All incl. backfill', f: function () { S.from = ALLDAYS[0]; S.to = ALLDAYS[ALLDAYS.length - 1]; S.windowOnly = false; } }
+      { l: '7 days',  f: function () { S.to = WINDAYS[WINDAYS.length - 1]; S.from = WINDAYS[Math.max(0, WINDAYS.length - 7)];  S.windowOnly = true; } },
+      { l: '14 days', f: function () { S.to = WINDAYS[WINDAYS.length - 1]; S.from = WINDAYS[Math.max(0, WINDAYS.length - 14)]; S.windowOnly = true; } },
+      { l: '30 days', f: function () { S.to = WINDAYS[WINDAYS.length - 1]; S.from = WINDAYS[Math.max(0, WINDAYS.length - 30)]; S.windowOnly = true; } }
     ];
+    var presetBtns = [];
     presets.forEach(function (p) {
-      var b = h('button', { class: 'chip', type: 'button', text: p.l });
-      b.addEventListener('click', function () { p.f(); syncDates(); render(); });
-      r1.appendChild(b);
-    });
-    var dFrom = h('input', { type: 'date', min: ALLDAYS[0], max: ALLDAYS[ALLDAYS.length - 1], value: S.from });
-    var dTo = h('input', { type: 'date', min: ALLDAYS[0], max: ALLDAYS[ALLDAYS.length - 1], value: S.to });
-    function syncDates() { dFrom.value = S.from; dTo.value = S.to; }
-    dFrom.addEventListener('change', function () { if (dFrom.value) { S.from = dFrom.value; render(); } });
-    dTo.addEventListener('change', function () { if (dTo.value) { S.to = dTo.value; render(); } });
-    r1.appendChild(dFrom); r1.appendChild(h('span', { class: 'fnote', text: '→' })); r1.appendChild(dTo);
-    g1.appendChild(r1);
-    host.appendChild(g1);
-
-    function chipGroup(title, keys, store, labeller) {
-      var g = h('div', { class: 'fgroup' }, [h('span', { class: 'lbl', text: title })]);
-      var r = h('div', { class: 'row' });
-      var all = h('button', { class: 'chip', type: 'button', text: 'all' });
-      all.addEventListener('click', function () { keys.forEach(function (k) { store[k] = true; }); render(); });
-      r.appendChild(all);
-      keys.forEach(function (k) {
-        var b = h('button', { class: 'chip', type: 'button', text: labeller ? labeller(k) : k });
-        b.setAttribute('aria-pressed', store[k] ? 'true' : 'false');
-        b.addEventListener('click', function () {
-          store[k] = !store[k];
-          if (!keys.some(function (x) { return store[x]; })) { store[k] = true; }
-          render();
-        });
-        r.appendChild(b);
+      var b = document.createElement('button'); b.type = 'button'; b.className = 'df-preset-btn';
+      b.textContent = p.l;
+      b.addEventListener('click', function () {
+        p.f();
+        syncDates();
+        setDirty();
+        updateSummary();
+        presetBtns.forEach(function (x) { x.classList.remove('active'); });
+        b.classList.add('active');
       });
-      g.appendChild(r);
-      return g;
+      presetBtns.push(b);
+      presetsRow.appendChild(b);
+    });
+    dateLine.appendChild(presetsRow);
+
+    var datesRow = document.createElement('div'); datesRow.className = 'df-dates-row';
+    var dFrom = document.createElement('input'); dFrom.type = 'date'; dFrom.className = 'df-date-input';
+    dFrom.min = ALLDAYS[0]; dFrom.max = ALLDAYS[ALLDAYS.length - 1]; dFrom.value = S.from;
+    var arrow = document.createElement('span'); arrow.className = 'df-date-arrow'; arrow.textContent = '→';
+    var dTo = document.createElement('input'); dTo.type = 'date'; dTo.className = 'df-date-input';
+    dTo.min = ALLDAYS[0]; dTo.max = ALLDAYS[ALLDAYS.length - 1]; dTo.value = S.to;
+    function syncDates() { dFrom.value = S.from; dTo.value = S.to; }
+
+    dFrom.addEventListener('change', function () {
+      if (dFrom.value) {
+        S.from = dFrom.value;
+        presetBtns.forEach(function (x) { x.classList.remove('active'); });
+        setDirty();
+        updateSummary();
+      }
+    });
+    dTo.addEventListener('change', function () {
+      if (dTo.value) {
+        S.to = dTo.value;
+        presetBtns.forEach(function (x) { x.classList.remove('active'); });
+        setDirty();
+        updateSummary();
+      }
+    });
+    datesRow.appendChild(dFrom);
+    datesRow.appendChild(arrow);
+    datesRow.appendChild(dTo);
+    dateLine.appendChild(datesRow);
+
+    dateSection.appendChild(dateLine);
+    card.appendChild(dateSection);
+
+    /* --- 3-column row: PLATFORM | TOPIC | DATA SCOPE --- */
+    var grid = document.createElement('div');
+    grid.className = 'df-grid-3col detailed-only-filter';
+
+    // 1. Platform
+    var platSection = document.createElement('div');
+    platSection.className = 'df-col';
+    var platLbl = document.createElement('div');
+    platLbl.className = 'df-label';
+    platLbl.textContent = 'PLATFORM';
+    var platDd = _makeDropdown('All platforms', PLATFORMS, S.platforms, null, function () { setDirty(); updateSummary(); });
+    platSection.appendChild(platLbl);
+    platSection.appendChild(platDd);
+
+    // 2. Topic
+    var topicSection = document.createElement('div');
+    topicSection.className = 'df-col';
+    var topicLbl = document.createElement('div');
+    topicLbl.className = 'df-label';
+    topicLbl.textContent = 'TOPIC';
+    var topicDd = _makeDropdown('All topics', TOPIC_IDS, S.topics, function (t) { return topicLabel(t); }, function () { setDirty(); updateSummary(); });
+    topicSection.appendChild(topicLbl);
+    topicSection.appendChild(topicDd);
+
+    // 3. Data Scope
+    var scopeSection = document.createElement('div');
+    scopeSection.className = 'df-col';
+    var scopeLbl = document.createElement('div');
+    scopeLbl.className = 'df-label';
+    scopeLbl.textContent = 'DATA SCOPE';
+
+    var scopeToggle = document.createElement('div');
+    scopeToggle.className = 'df-scope-toggle';
+    var winBtn = document.createElement('button');
+    winBtn.type = 'button';
+    winBtn.className = 'df-scope-btn';
+    winBtn.textContent = 'In-window only';
+    var backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'df-scope-btn';
+    backBtn.textContent = 'Include backfill';
+
+    function refreshScope() {
+      winBtn.classList.toggle('active', S.windowOnly);
+      backBtn.classList.toggle('active', !S.windowOnly);
     }
-    host.appendChild(chipGroup('Platform', PLATFORMS, S.platforms));
-    host.appendChild(chipGroup('Topic', TOPIC_IDS, S.topics, function (t) {
-      var l = topicLabel(t);
-      return l.length > 22 ? l.slice(0, 21) + '…' : l;
-    }));
+    winBtn.addEventListener('click', function () {
+      S.windowOnly = true;
+      refreshScope();
+      setDirty();
+      updateSummary();
+    });
+    backBtn.addEventListener('click', function () {
+      S.windowOnly = false;
+      S.from = ALLDAYS[0];
+      S.to = ALLDAYS[ALLDAYS.length - 1];
+      syncDates();
+      presetBtns.forEach(function (x) { x.classList.remove('active'); });
+      refreshScope();
+      setDirty();
+      updateSummary();
+    });
+    refreshScope();
+    scopeToggle.appendChild(winBtn);
+    scopeToggle.appendChild(backBtn);
 
-    var g4 = h('div', { class: 'fgroup' }, [h('span', { class: 'lbl', text: 'Scope' })]);
-    var r4 = h('div', { class: 'row' });
-    var wb = h('button', { class: 'chip', type: 'button', text: 'in-window only' });
-    wb.setAttribute('aria-pressed', S.windowOnly ? 'true' : 'false');
-    wb.addEventListener('click', function () { S.windowOnly = !S.windowOnly; render(); });
-    r4.appendChild(wb);
-    g4.appendChild(r4);
-    host.appendChild(g4);
+    var scopeHint = document.createElement('div');
+    scopeHint.className = 'df-scope-hint';
+    scopeHint.textContent = 'Counts only posts published inside the selected dates.';
 
-    var note = h('div', { class: 'fgroup' }, [h('span', { class: 'lbl', text: 'Selection' }),
-      h('div', { class: 'fnote', id: 'fsummary', text: '' })]);
-    host.appendChild(note);
+    scopeSection.appendChild(scopeLbl);
+    scopeSection.appendChild(scopeToggle);
+    scopeSection.appendChild(scopeHint);
+
+    grid.appendChild(platSection);
+    grid.appendChild(topicSection);
+    grid.appendChild(scopeSection);
+    card.appendChild(grid);
+
+    /* --- footer: summary on left + (Reset to defaults, Applied) on right --- */
+    var footer = document.createElement('div');
+    footer.className = 'df-footer';
+
+    var summary = document.createElement('div');
+    summary.className = 'df-summary';
+    summary.id = 'fsummary';
+
+    var actions = document.createElement('div');
+    actions.className = 'df-footer-actions';
+
+    var resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.className = 'df-reset-btn';
+    resetBtn.textContent = 'Reset to defaults';
+
+    var applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.className = 'df-apply-btn';
+    applyBtn.textContent = 'Applied';
+
+    actions.appendChild(resetBtn);
+    actions.appendChild(applyBtn);
+    footer.appendChild(summary);
+    footer.appendChild(actions);
+    card.appendChild(footer);
+
+    host.appendChild(card);
+
+    function setDirty() {
+      applyBtn.textContent = 'Apply filters';
+      applyBtn.classList.add('dirty');
+    }
+    function setClean() {
+      applyBtn.textContent = 'Applied';
+      applyBtn.classList.remove('dirty');
+    }
+
+    applyBtn.addEventListener('click', function () {
+      render();
+      setClean();
+    });
+
+    function updateSummary() {
+      var nDays = 0;
+      var from = S.from || ALLDAYS[0] || '';
+      var to = S.to || ALLDAYS[ALLDAYS.length - 1] || '';
+      ALLDAYS.forEach(function (d) { if (d >= from && d <= to) { nDays++; } });
+      var nPlat = PLATFORMS.filter(function (p) { return S.platforms[p]; }).length;
+      var nTopic = TOPIC_IDS.filter(function (t) { return S.topics[t]; }).length;
+
+      var platStr = (nPlat === PLATFORMS.length) ? 'all platforms' : (nPlat + ' platforms');
+      var topStr  = (nTopic === TOPIC_IDS.length) ? 'all topics' : (nTopic + ' topics');
+
+      var el = document.getElementById('fsummary');
+      if (el) {
+        el.innerHTML = 'Will show: <span class="df-mono-date">' + from + ' → ' + to + '</span> · ' + platStr + ' · ' + topStr;
+      }
+      if (platDd._refresh) { platDd._refresh(); }
+      if (topicDd._refresh) { topicDd._refresh(); }
+    }
+    updateSummary();
+
+    resetBtn.addEventListener('click', function () {
+      S.from = WINDAYS[0] || ALLDAYS[0];
+      S.to = WINDAYS[WINDAYS.length - 1] || ALLDAYS[ALLDAYS.length - 1];
+      S.windowOnly = true;
+      PLATFORMS.forEach(function (p) { S.platforms[p] = true; });
+      TOPIC_IDS.forEach(function (t) { S.topics[t] = true; });
+      syncDates();
+      refreshScope();
+      presetBtns.forEach(function (x) { x.classList.remove('active'); });
+      presetBtns[0].classList.add('active');
+      if (platDd._refresh) { platDd._refresh(); }
+      if (topicDd._refresh) { topicDd._refresh(); }
+      updateSummary();
+      render();
+      setClean();
+    });
+
+    // set Full window active on load
+    if (presetBtns[0]) { presetBtns[0].classList.add('active'); }
   }
 
   function updateFilterChrome() {
-    document.querySelectorAll('#filters-in .chip').forEach(function (b) {
-      var t = b.textContent;
-      if (t === 'in-window only') { b.setAttribute('aria-pressed', S.windowOnly ? 'true' : 'false'); }
-    });
     var fs = document.getElementById('fsummary');
     if (fs) {
-      fs.textContent = F.days.length + ' days · ' + selPlatforms().length + '/' + PLATFORMS.length +
-        ' platforms · ' + selTopics().length + '/' + TOPIC_IDS.length + ' topics · ' +
-        fmtInt(F.md.length) + ' cells';
+      fs.textContent = F.days.length + ' days · ' + selPlatforms().length +
+        ' platforms · ' + selTopics().length + ' topics';
     }
   }
 
@@ -3302,7 +3657,14 @@
     readTokens();
     applyFilters();
     updateFilterChrome();
-    document.querySelectorAll('[data-panel]').forEach(function (host) {
+    var mode = (document.body && document.body.getAttribute('data-mode')) || 'basic';
+    var selector = (mode === 'basic') ? '#basic-view [data-panel]' : '#advanced-view [data-panel]';
+
+    document.querySelectorAll(selector).forEach(function (host) {
+      var sec = host.closest ? host.closest('section.sec') : null;
+      if (sec && sec.style.display === 'none') {
+        return;
+      }
       var key = host.getAttribute('data-panel');
       host.textContent = '';
       var fn = P[key];
@@ -3311,17 +3673,6 @@
         empty(host, 'Render error in panel "' + key + '": ' + e.message);
         if (window.console) { console.error(key, e); }
       }
-    });
-    document.querySelectorAll('#filters-in .chip').forEach(function (b) {
-      var t = b.textContent;
-      if (S.platforms.hasOwnProperty(t)) { b.setAttribute('aria-pressed', S.platforms[t] ? 'true' : 'false'); }
-    });
-    document.querySelectorAll('#filters-in .chip').forEach(function (b) {
-      TOPIC_IDS.forEach(function (id) {
-        var l = topicLabel(id);
-        var short = l.length > 22 ? l.slice(0, 21) + '…' : l;
-        if (b.textContent === short) { b.setAttribute('aria-pressed', S.topics[id] ? 'true' : 'false'); }
-      });
     });
     if (window.__SELFTEST__) { selftest(); }
   }
@@ -3569,6 +3920,538 @@
     window.__liveNerPoll = liveNerPoll;
   }
 
+  /* ============================================================ Overview date chip strip (v14) */
+
+  function buildBasicDateStrip() {
+    // Remove any previously built strip (re-init guard)
+    var old = document.getElementById('basic-date-strip');
+    if (old) { old.parentNode.removeChild(old); }
+
+    var strip = document.createElement('div');
+    strip.id = 'basic-date-strip';
+
+    /* ---- DATE RANGE group ---- */
+    var drGroup = document.createElement('div');
+    drGroup.className = 'bds-group';
+
+    var drLabel = document.createElement('span');
+    drLabel.className = 'bds-label';
+    drLabel.textContent = 'DATE RANGE';
+    drGroup.appendChild(drLabel);
+
+    var drRow = document.createElement('div');
+    drRow.className = 'bds-row';
+
+    var presets = [
+      { l: 'Full window', f: function () {
+          S.from = WINDAYS[0] || ALLDAYS[0];
+          S.to   = WINDAYS[WINDAYS.length - 1] || ALLDAYS[ALLDAYS.length - 1];
+          S.windowOnly = true;
+        }
+      },
+      { l: 'Last 7d', f: function () {
+          S.to   = WINDAYS[WINDAYS.length - 1] || ALLDAYS[ALLDAYS.length - 1];
+          S.from = WINDAYS[Math.max(0, WINDAYS.length - 7)] || ALLDAYS[Math.max(0, ALLDAYS.length - 7)];
+          S.windowOnly = true;
+        }
+      },
+      { l: 'Last 14d', f: function () {
+          S.to   = WINDAYS[WINDAYS.length - 1] || ALLDAYS[ALLDAYS.length - 1];
+          S.from = WINDAYS[Math.max(0, WINDAYS.length - 14)] || ALLDAYS[Math.max(0, ALLDAYS.length - 14)];
+          S.windowOnly = true;
+        }
+      },
+      { l: 'Last 30d', f: function () {
+          S.to   = WINDAYS[WINDAYS.length - 1] || ALLDAYS[ALLDAYS.length - 1];
+          S.from = WINDAYS[Math.max(0, WINDAYS.length - 30)] || ALLDAYS[Math.max(0, ALLDAYS.length - 30)];
+          S.windowOnly = true;
+        }
+      },
+      { l: 'All incl. backfill', f: function () {
+          S.from = ALLDAYS[0] || '';
+          S.to   = ALLDAYS[ALLDAYS.length - 1] || '';
+          S.windowOnly = false;
+        }
+      }
+    ];
+
+    var btns = [];
+    presets.forEach(function (p) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'df-preset-btn';
+      b.textContent = p.l;
+      b.addEventListener('click', function () {
+        p.f();
+        btns.forEach(function (x) { x.classList.remove('active'); });
+        b.classList.add('active');
+        updateBdsInputs();
+        updateBdsSummary();
+        render();
+      });
+      btns.push(b);
+      drRow.appendChild(b);
+    });
+
+    /* date inputs */
+    var dFrom = document.createElement('input');
+    dFrom.type = 'date'; dFrom.className = 'bds-date-input';
+    dFrom.value = S.from;
+    var sep = document.createElement('span');
+    sep.className = 'bds-arrow'; sep.textContent = '→';
+    var dTo = document.createElement('input');
+    dTo.type = 'date'; dTo.className = 'bds-date-input';
+    dTo.value = S.to;
+
+    function updateBdsInputs() {
+      dFrom.value = S.from;
+      dTo.value = S.to;
+    }
+
+    dFrom.addEventListener('change', function () {
+      S.from = dFrom.value;
+      btns.forEach(function (x) { x.classList.remove('active'); });
+      updateBdsSummary();
+      render();
+    });
+    dTo.addEventListener('change', function () {
+      S.to = dTo.value;
+      btns.forEach(function (x) { x.classList.remove('active'); });
+      updateBdsSummary();
+      render();
+    });
+
+    drRow.appendChild(dFrom);
+    drRow.appendChild(sep);
+    drRow.appendChild(dTo);
+    drGroup.appendChild(drRow);
+    strip.appendChild(drGroup);
+
+    /* ---- divider ---- */
+    var div1 = document.createElement('div'); div1.className = 'bds-divider'; strip.appendChild(div1);
+
+    /* ---- SCOPE group ---- */
+    var scGroup = document.createElement('div');
+    scGroup.className = 'bds-group';
+
+    var scLabel = document.createElement('span');
+    scLabel.className = 'bds-label'; scLabel.textContent = 'SCOPE';
+    scGroup.appendChild(scLabel);
+
+    var scRow = document.createElement('div');
+    scRow.className = 'bds-row bds-scope-wrap';
+
+    var winBtn = document.createElement('button');
+    winBtn.type = 'button'; winBtn.className = 'bds-scope-btn'; winBtn.textContent = 'in-window only';
+    var backBtn = document.createElement('button');
+    backBtn.type = 'button'; backBtn.className = 'bds-scope-btn'; backBtn.textContent = 'incl. backfill';
+
+    function refreshScope() {
+      winBtn.classList.toggle('active', S.windowOnly);
+      backBtn.classList.toggle('active', !S.windowOnly);
+    }
+    refreshScope();
+
+    winBtn.addEventListener('click', function () { S.windowOnly = true; refreshScope(); updateBdsSummary(); render(); });
+    backBtn.addEventListener('click', function () {
+      S.windowOnly = false;
+      S.from = ALLDAYS[0] || S.from;
+      S.to   = ALLDAYS[ALLDAYS.length - 1] || S.to;
+      btns.forEach(function (x) { x.classList.remove('active'); });
+      if (btns[4]) { btns[4].classList.add('active'); }
+      updateBdsInputs();
+      refreshScope();
+      updateBdsSummary();
+      render();
+    });
+
+    scRow.appendChild(winBtn);
+    scRow.appendChild(backBtn);
+    scGroup.appendChild(scRow);
+    strip.appendChild(scGroup);
+
+    /* ---- divider ---- */
+    var div2 = document.createElement('div'); div2.className = 'bds-divider'; strip.appendChild(div2);
+
+    /* ---- SELECTION summary ---- */
+    var selGroup = document.createElement('div');
+    selGroup.className = 'bds-group';
+
+    var selLabel = document.createElement('span');
+    selLabel.className = 'bds-label'; selLabel.textContent = 'SELECTION';
+    selGroup.appendChild(selLabel);
+
+    var selVal = document.createElement('span');
+    selVal.className = 'bds-summary'; selVal.id = 'bds-summary-val';
+    selGroup.appendChild(selVal);
+    strip.appendChild(selGroup);
+
+    /* summary updater */
+    function updateBdsSummary() {
+      var days = ALLDAYS.filter(function (d) { return d >= S.from && d <= S.to; });
+      var nDays = days.length;
+      var nPlat = Object.keys(S.platforms).filter(function (k) { return S.platforms[k]; }).length;
+      var totPlat = Object.keys(S.platforms).length;
+      var nTop  = Object.keys(S.topics).filter(function (k) { return S.topics[k]; }).length;
+      var totTop = Object.keys(S.topics).length;
+      selVal.textContent = nDays + ' days · ' + nPlat + '/' + totPlat + ' platforms · ' + nTop + '/' + totTop + ' topics';
+    }
+    updateBdsSummary();
+
+    // Default to "Full window" active
+    if (btns.length) { btns[0].classList.add('active'); }
+
+    // Insert just before #basic-view
+    var basicView = document.getElementById('basic-view');
+    if (basicView && basicView.parentNode) {
+      basicView.parentNode.insertBefore(strip, basicView);
+    }
+  }
+
+  /* ============================================================ Dashboard Sections nav (v11) */
+
+  function buildDashboardSections() {
+    var advView = document.getElementById('advanced-view');
+    if (!advView) { return; }
+
+    // Remove existing dash-sections-wrap if already built (re-init guard)
+    var existing = advView.querySelector('.dash-sections-wrap');
+    if (existing) { existing.parentNode.removeChild(existing); }
+
+    var sections = Array.prototype.slice.call(advView.querySelectorAll('section.sec'));
+    if (!sections.length) { return; }
+
+    var groups = [
+      {
+        icon: '⊞',
+        title: '1. Overview & Alerts',
+        subtitle: 'Header & KPI · Alerts · Acceleration · Burst episodes',
+        metrics: [
+          { id: 'kpi', label: '1. Header & KPI row' },
+          { id: 'alerts', label: '2. Alerts (FDR-gated)' },
+          { id: 'accel', label: '3. Acceleration & emergence' },
+          { id: 'bursts', label: '4. Burst episodes' }
+        ]
+      },
+      {
+        icon: '📈',
+        title: '2. Activity & Virality',
+        subtitle: 'Volume & growth · Intensity · Persistence · Virality & reach',
+        metrics: [
+          { id: 'volume', label: '5. Volume & growth' },
+          { id: 'intensity', label: '6. Intensity & surprise' },
+          { id: 'persistence', label: '7. Persistence' },
+          { id: 'virality', label: '10. Virality & reach' }
+        ]
+      },
+      {
+        icon: '👥',
+        title: '3. Behaviour & Content',
+        subtitle: 'Tone · Hate/toxicity · Author diversity · Readability',
+        metrics: [
+          { id: 'tone', label: '8. Tone' },
+          { id: 'hate', label: '9. Hate / toxicity' },
+          { id: 'authors', label: '11. Author diversity & coordination' },
+          { id: 'readability', label: '12. Readability' }
+        ]
+      },
+      {
+        icon: '🔗',
+        title: '4. Entities & Ontology',
+        subtitle: 'Ontology · Entity directory · Hashtags · Live NER',
+        metrics: [
+          { id: 'ontology', label: '13. Ontology' },
+          { id: 'hashtags', label: '14. Hashtags' },
+          { id: 'entities', label: '16. Entity directory' },
+          { id: 'livener', label: '20. Live NER' }
+        ]
+      },
+      {
+        icon: '🛡',
+        title: '5. Risk & Intelligence',
+        subtitle: 'Risk categories · Timeline & alerts · Geo-ontology · Methodology',
+        metrics: [
+          { id: 'methodology', label: '15. Methodology & data quality' },
+          { id: 'risktheme', label: '17. Risk categories & thematic dimensions' },
+          { id: 'geotimeline', label: '18. Timeline & alerts' },
+          { id: 'geoverify', label: '19. Geo-ontology verification' }
+        ]
+      }
+    ];
+
+    groups.forEach(function (g) {
+      g.ids = g.metrics.map(function (m) { return m.id; });
+    });
+
+    var wrap = document.createElement('div');
+    wrap.className = 'dash-sections-wrap';
+
+    // 1. Primary Category Bar (Top-level tabs)
+    var list = document.createElement('div');
+    list.className = 'dash-sections-tabs';
+
+    var allBtn = document.createElement('button');
+    allBtn.type = 'button';
+    allBtn.className = 'dash-sec-pill dash-sec-all-pill';
+    allBtn.innerHTML = '<span class="dsp-icon">⚡</span><span>View all (20)</span>';
+
+    var pills = [];
+
+    // 2. Secondary Sub-metric Bar
+    var subBar = document.createElement('div');
+    subBar.className = 'dash-subsections-bar';
+
+    var currentGroup = -1;
+    var currentSubId = null;
+
+    function renderSubBar(groupIdx, activeSubId) {
+      subBar.textContent = '';
+      if (groupIdx === -1) {
+        var lbl = document.createElement('span');
+        lbl.className = 'dsub-label';
+        lbl.textContent = 'ALL 20 METRICS:';
+        subBar.appendChild(lbl);
+
+        var jumpSelect = document.createElement('select');
+        jumpSelect.className = 'dsub-select';
+        var defOpt = document.createElement('option');
+        defOpt.value = '';
+        defOpt.textContent = 'Jump directly to metric…';
+        jumpSelect.appendChild(defOpt);
+
+        groups.forEach(function (g) {
+          var optGrp = document.createElement('optgroup');
+          optGrp.label = g.title;
+          g.metrics.forEach(function (m) {
+            var opt = document.createElement('option');
+            opt.value = m.id;
+            opt.textContent = m.label;
+            optGrp.appendChild(opt);
+          });
+          jumpSelect.appendChild(optGrp);
+        });
+
+        jumpSelect.addEventListener('change', function () {
+          if (jumpSelect.value) {
+            var el = document.getElementById(jumpSelect.value);
+            if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+          }
+        });
+        subBar.appendChild(jumpSelect);
+        return;
+      }
+
+      var g = groups[groupIdx];
+      var lbl = document.createElement('span');
+      lbl.className = 'dsub-label';
+      lbl.textContent = 'SHOW:';
+      subBar.appendChild(lbl);
+
+      // "All in section" pill
+      var allPill = document.createElement('button');
+      allPill.type = 'button';
+      allPill.className = 'dash-sub-pill' + (!activeSubId ? ' active' : '');
+      allPill.textContent = 'All in ' + g.title.replace(/^\d+\.\s*/, '');
+      allPill.addEventListener('click', function () {
+        showSubMetric(groupIdx, null);
+      });
+      subBar.appendChild(allPill);
+
+      // Sub-metric pills
+      g.metrics.forEach(function (m) {
+        var mPill = document.createElement('button');
+        mPill.type = 'button';
+        mPill.className = 'dash-sub-pill' + (activeSubId === m.id ? ' active' : '');
+        mPill.textContent = m.label;
+        mPill.addEventListener('click', function () {
+          showSubMetric(groupIdx, m.id);
+        });
+        subBar.appendChild(mPill);
+      });
+    }
+
+    function showGroup(groupIdx, isAll) {
+      currentGroup = isAll ? -1 : groupIdx;
+      currentSubId = null;
+
+      pills.forEach(function (p, i) { p.classList.toggle('active', !isAll && i === groupIdx); });
+      allBtn.classList.toggle('active', isAll);
+
+      sections.forEach(function (sec) {
+        if (isAll) {
+          sec.style.display = '';
+        } else {
+          sec.style.display = (groups[groupIdx].ids.indexOf(sec.id) !== -1) ? '' : 'none';
+        }
+      });
+
+      renderSubBar(currentGroup, null);
+      setTimeout(function () { render(); window.dispatchEvent(new Event('resize')); }, 40);
+      try { if (history.replaceState) { history.replaceState(null, null, isAll ? '#all' : '#group' + groupIdx); } } catch (e) {}
+    }
+
+    function showSubMetric(groupIdx, subId) {
+      currentGroup = groupIdx;
+      currentSubId = subId;
+
+      sections.forEach(function (sec) {
+        if (!subId) {
+          sec.style.display = (groups[groupIdx].ids.indexOf(sec.id) !== -1) ? '' : 'none';
+        } else {
+          sec.style.display = (sec.id === subId) ? '' : 'none';
+        }
+      });
+
+      renderSubBar(groupIdx, subId);
+      setTimeout(function () {
+        render();
+        window.dispatchEvent(new Event('resize'));
+        var target = document.getElementById(subId || groups[groupIdx].ids[0]);
+        if (target) { target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+      }, 50);
+      try { if (history.replaceState) { history.replaceState(null, null, '#' + (subId || groups[groupIdx].ids[0])); } } catch (e) {}
+    }
+
+    allBtn.addEventListener('click', function () { showGroup(-1, true); });
+    list.appendChild(allBtn);
+
+    groups.forEach(function (g, gi) {
+      var pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = 'dash-sec-pill';
+      pill.title = g.subtitle;
+      pill.innerHTML = '<span class="dsp-icon">' + g.icon + '</span><span class="dsp-title">' + g.title + '</span>';
+      pill.addEventListener('click', function () {
+        showGroup(gi, false);
+        var first = document.getElementById(g.ids[0]);
+        if (first) {
+          setTimeout(function () { first.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 80);
+        }
+      });
+      pills.push(pill);
+      list.appendChild(pill);
+    });
+
+    wrap.appendChild(list);
+    wrap.appendChild(subBar);
+
+    var firstSection = advView.querySelector('section.sec');
+    if (firstSection) { advView.insertBefore(wrap, firstSection); } else { advView.appendChild(wrap); }
+
+    var hash = (location.hash || '').replace(/^#/, '');
+    if (hash && hash !== 'all') {
+      var gIdx = -1, mId = null;
+      groups.forEach(function (g, i) {
+        if (g.ids.indexOf(hash) !== -1) {
+          gIdx = i;
+          mId = hash;
+        }
+      });
+      if (gIdx !== -1) {
+        showSubMetric(gIdx, mId);
+        return;
+      }
+    }
+    showGroup(-1, true);
+    window.__showDashGroup = showGroup;
+    window.__showSubMetric = showSubMetric;
+  }
+
+  
+  function initDetailedMetricToggle() {
+    var toc = document.querySelector('#advanced-view .toc');
+    var advView = document.getElementById('advanced-view');
+    if (!toc || !advView) { return; }
+
+    var sections = Array.prototype.slice.call(advView.querySelectorAll('section.sec'));
+    if (!sections.length) { return; }
+
+    // Add 'View All' pill at the start of TOC if not already present
+    var allBtn = toc.querySelector('.toc-all-btn');
+    if (!allBtn) {
+      allBtn = document.createElement('a');
+      allBtn.className = 'toc-btn toc-all-btn';
+      allBtn.href = '#all';
+      allBtn.textContent = '⚡ View All';
+      toc.insertBefore(allBtn, toc.firstChild);
+    }
+
+    var links = Array.prototype.slice.call(toc.querySelectorAll('a'));
+    var validIds = sections.map(function (s) { return s.id; });
+
+    function showSection(targetId, updateHash) {
+      var isAll = !targetId || targetId === 'all';
+
+      // Update active state on tabs
+      links.forEach(function (l) {
+        var href = l.getAttribute('href') || '';
+        var id = href.replace(/^#/, '');
+        if ((isAll && id === 'all') || (!isAll && id === targetId)) {
+          l.classList.add('active');
+          l.setAttribute('aria-selected', 'true');
+        } else {
+          l.classList.remove('active');
+          l.setAttribute('aria-selected', 'false');
+        }
+      });
+
+      // Show/hide sections
+      sections.forEach(function (sec) {
+        if (isAll || sec.id === targetId) {
+          sec.style.display = '';
+        } else {
+          sec.style.display = 'none';
+        }
+      });
+
+      // Trigger resize for newly visible charts
+      setTimeout(function () {
+        window.dispatchEvent(new Event('resize'));
+      }, 60);
+
+      if (updateHash !== false) {
+        try {
+          if (history.replaceState) {
+            history.replaceState(null, null, '#' + (isAll ? 'all' : targetId));
+          }
+        } catch (e) {}
+      }
+    }
+
+    // Attach click events
+    links.forEach(function (link) {
+      link.addEventListener('click', function (e) {
+        e.preventDefault();
+        var href = link.getAttribute('href') || '';
+        var id = href.replace(/^#/, '');
+        showSection(id, true);
+        if (id !== 'all') {
+          var targetSec = document.getElementById(id);
+          if (targetSec) {
+            targetSec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }
+      });
+    });
+
+    // Check hash on load or default to first section
+    var initialHash = (location.hash || '').replace(/^#/, '');
+    if (initialHash && (initialHash === 'all' || validIds.indexOf(initialHash) !== -1)) {
+      showSection(initialHash, false);
+    } else {
+      showSection(sections[0].id, false);
+    }
+
+    window.addEventListener('hashchange', function () {
+      var h = (location.hash || '').replace(/^#/, '');
+      if (h && (h === 'all' || validIds.indexOf(h) !== -1)) {
+        showSection(h, false);
+      }
+    });
+
+    window.__showMetricTab = showSection;
+  }
+
   function initUI() {
     if (/[?&]selftest=1/.test(location.search)) { window.__SELFTEST__ = true; }
     if (/[?&]theme=light/.test(location.search)) {
@@ -3581,6 +4464,9 @@
     buildFilters();
     render();
     initLiveNer();
+    initDetailedMetricToggle();
+    buildBasicDateStrip();
+    buildDashboardSections();
     var t = null;
     window.addEventListener('resize', function () {
       if (t) { clearTimeout(t); }
@@ -3608,7 +4494,7 @@
     }
     var url = window.__METRICS_URL__ || 'data/metrics.json';
     setStatus('loading metrics…', 'gray');
-    fetch(url, { cache: 'no-store' })
+    fetch(url)
       .then(function (r) {
         if (!r.ok) { throw new Error(url + ' → HTTP ' + r.status); }
         return r.json();

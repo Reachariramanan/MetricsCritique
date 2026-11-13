@@ -65,19 +65,42 @@ def virality_raw(platform: str, likes, comments, shares, views) -> float:
     comments = 0.0 if pd.isna(comments) else float(comments)
     shares = 0.0 if pd.isna(shares) else float(shares)
     views = 0.0 if pd.isna(views) else float(views)
-    if platform == "telegram":
-        return shares / (views + ALPHA) if views or shares else np.nan
-    if platform in ("instagram", "facebook"):
-        denom = likes + comments + shares + ALPHA
-        return shares / denom
+
+    # 1. View-centric platforms
+    # NOTE: baidu_video excluded — DB shows 0 shares/likes/comments for all 240 posts;
+    # including it would collapse all percentiles to 0.0. Returns NaN below.
+    if platform in ("telegram", "snapchat", "tiktok"):
+        return shares / (views + ALPHA) if (views or shares) else np.nan
+
+    # 1b. Baidu Video: only view data exists; no interaction signals → not rankable.
+    if platform == "baidu_video":
+        return np.nan
+
+    # 2. Twitter / X (views-weighted if views exist, else interaction share fallback)
+    if platform == "twitter":
+        if views > 0:
+            return shares / (views + ALPHA)
+        d = likes + comments + shares
+        return shares / (d + ALPHA) if d else np.nan
+
+    # 3. Microblogging with shares (TruthSocial, Mastodon, Facebook)
+    if platform in ("truthsocial", "mastodon", "facebook", "facebook_profile"):
+        d = likes + comments + shares
+        return shares / (d + ALPHA) if d else np.nan
+
+    # 4. YouTube Video
     if platform == "youtube_video":
-        return (likes + comments) / (views + ALPHA) if views or likes or comments else np.nan
-    if platform == "linkedin":
-        return comments / (likes + ALPHA) if likes or comments else np.nan
-    if platform == "snapchat":
-        return shares / (views + ALPHA) if views or shares else np.nan
-    if platform == "reddit":
-        return np.nan  # structural proxy handled separately
+        return (likes + comments) / (views + ALPHA) if (views or likes or comments) else np.nan
+
+    # 5. Share-less & Discussion platforms (Instagram, LinkedIn, Baidu Tieba)
+    # Uses conversation velocity (comments / likes) to avoid 100% 0.50 percentile collapse
+    if platform in ("instagram", "linkedin", "baidu_tieba"):
+        return comments / (likes + ALPHA) if (likes or comments) else np.nan
+
+    # 6. YouTube Comments
+    if platform == "youtube_comment":
+        return likes / (comments + ALPHA) if (likes or comments) else np.nan
+
     return np.nan
 
 
